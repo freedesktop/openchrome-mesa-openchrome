@@ -1,0 +1,7 @@
+C_SOURCES := \
+	openchrome_drm_bufmgr.c	\
+	openchrome_drm_bufmgr.h	\
+	openchrome_drm_winsys.c \
+	openchrome_drm_winsys.h \
+	openchrome_drm_winsys.c \
+	via_drm.h

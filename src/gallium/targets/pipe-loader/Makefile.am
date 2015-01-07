@@ -171,6 +171,19 @@ pipe_msm_la_LIBADD = \
 
 endif
 
+if HAVE_GALLIUM_OPENCHROME
+pipe_LTLIBRARIES += pipe_openchrome.la
+
+pipe_msm_la_SOURCES = pipe_openchrome.c
+nodist_EXTRA_pipe_openchrome_la_SOURCES = dummy.cpp
+pipe_openchrome_la_LIBADD = \
+	$(PIPE_LIBS) \
+	$(top_builddir)/src/gallium/winsys/openchrome/drm/libopenchromedrm.la \
+	$(top_builddir)/src/gallium/drivers/openchrome/libopenchrome.la \
+	$(LIBDRM_LIBS)
+
+endif
+
 if HAVE_GALLIUM_SVGA
 pipe_LTLIBRARIES += pipe_vmwgfx.la
 

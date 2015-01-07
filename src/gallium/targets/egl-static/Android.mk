@@ -71,6 +71,9 @@ endif
 ifneq ($(filter radeonsi, $(MESA_GPU_DRIVERS)),)
 LOCAL_CFLAGS += -DGALLIUM_RADEONSI
 endif
+ifneq ($(filter openchrome, $(MESA_GPU_DRIVERS)),)
+LOCAL_CFLAGS += -DGALLIUM_OPENCHROME
+endif
 ifneq ($(filter vmwgfx, $(MESA_GPU_DRIVERS)),)
 LOCAL_CFLAGS += -DGALLIUM_VMWGFX
 endif

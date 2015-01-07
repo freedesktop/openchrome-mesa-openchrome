@@ -74,6 +74,8 @@ include $(top_srcdir)/src/gallium/drivers/svga/Automake.inc
 
 include $(top_srcdir)/src/gallium/drivers/freedreno/Automake.inc
 
+include $(top_srcdir)/src/gallium/drivers/openchrome/Automake.inc
+
 gbm_gallium_drm_la_SOURCES += target.c
 gbm_gallium_drm_la_CPPFLAGS = $(TARGET_CPPFLAGS)
 gbm_gallium_drm_la_LIBADD += $(TARGET_LIB_DEPS) \

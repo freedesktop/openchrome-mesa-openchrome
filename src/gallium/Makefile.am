@@ -67,6 +67,11 @@ if NEED_RADEON_DRM_WINSYS
 SUBDIRS += winsys/radeon/drm
 endif
 
+## openchrome
+if HAVE_GALLIUM_OPENCHROME
+SUBDIRS += drivers/openchrome
+endif
+
 ## swrast/softpipe
 if HAVE_GALLIUM_SOFTPIPE
 SUBDIRS += drivers/softpipe

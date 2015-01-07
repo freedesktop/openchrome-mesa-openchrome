@@ -742,7 +742,7 @@ GALLIUM_DRIVERS_DEFAULT="r300,r600,svga,swrast"
 AC_ARG_WITH([gallium-drivers],
     [AS_HELP_STRING([--with-gallium-drivers@<:@=DIRS...@:>@],
         [comma delimited Gallium drivers list, e.g.
-        "i915,ilo,nouveau,r300,r600,radeonsi,freedreno,svga,swrast,vc4"
+        "i915,ilo,nouveau,r300,r600,radeonsi,freedreno,openchrome,svga,swrast,vc4"
         @<:@default=r300,r600,svga,swrast@:>@])],
     [with_gallium_drivers="$withval"],
     [with_gallium_drivers="$GALLIUM_DRIVERS_DEFAULT"])
@@ -1946,6 +1946,12 @@ if test -n "$with_gallium_drivers"; then
             gallium_require_drm "freedreno"
             gallium_require_drm_loader
             ;;
+        xopenchrome)
+            HAVE_GALLIUM_OPENCHROME=yes
+            gallium_require_drm "openchrome"
+            gallium_require_drm_loader
+            require_egl_drm "openchrome"
+            ;;
         xswrast)
             HAVE_GALLIUM_SOFTPIPE=yes
             if test "x$MESA_LLVM" = x1; then
@@ -2029,6 +2035,7 @@ AM_CONDITIONAL(HAVE_GALLIUM_NOUVEAU, test "x$HAVE_GALLIUM_NOUVEAU" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_FREEDRENO, test "x$HAVE_GALLIUM_FREEDRENO" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_SOFTPIPE, test "x$HAVE_GALLIUM_SOFTPIPE" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_LLVMPIPE, test "x$HAVE_GALLIUM_LLVMPIPE" = xyes)
+AM_CONDITIONAL(HAVE_GALLIUM_OPENCHROME, test "x$HAVE_GALLIUM_OPENCHROME" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_VC4, test "x$HAVE_GALLIUM_VC4" = xyes)
 
 AM_CONDITIONAL(HAVE_GALLIUM_STATIC_TARGETS, test "x$enable_shared_pipe_drivers" = xno)
@@ -2160,6 +2167,7 @@ AC_CONFIG_FILES([Makefile
 		src/gallium/drivers/llvmpipe/Makefile
 		src/gallium/drivers/noop/Makefile
 		src/gallium/drivers/nouveau/Makefile
+		src/gallium/drivers/openchrome/Makefile
 		src/gallium/drivers/r300/Makefile
 		src/gallium/drivers/r600/Makefile
 		src/gallium/drivers/radeon/Makefile
@@ -2198,6 +2206,7 @@ AC_CONFIG_FILES([Makefile
 		src/gallium/tests/trivial/Makefile
 		src/gallium/tests/unit/Makefile
 		src/gallium/winsys/freedreno/drm/Makefile
+		src/gallium/winsys/openchrome/drm/Makefile
 		src/gallium/winsys/i915/drm/Makefile
 		src/gallium/winsys/intel/drm/Makefile
 		src/gallium/winsys/nouveau/drm/Makefile

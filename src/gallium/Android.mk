@@ -74,6 +74,11 @@ endif
 endif
 endif
 
+# openchrome
+ifneq ($(filter openchrome, $(MESA_GPU_DRIVERS)),)
+SUBDIRS += winsys/openchrome/drm drivers/openchrome
+endif
+
 # vmwgfx
 ifneq ($(filter vmwgfx, $(MESA_GPU_DRIVERS)),)
 SUBDIRS += winsys/svga/drm drivers/svga
