@@ -835,10 +835,9 @@ static void *si_create_dsa_state(struct pipe_context *ctx,
 	/* alpha */
 	if (state->alpha.enabled) {
 		dsa->alpha_func = state->alpha.func;
-		dsa->alpha_ref = state->alpha.ref_value;
 
 		si_pm4_set_reg(pm4, R_00B030_SPI_SHADER_USER_DATA_PS_0 +
-		               SI_SGPR_ALPHA_REF * 4, fui(dsa->alpha_ref));
+		               SI_SGPR_ALPHA_REF * 4, fui(state->alpha.ref_value));
 	} else {
 		dsa->alpha_func = PIPE_FUNC_ALWAYS;
 	}
@@ -1996,14 +1995,16 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	unsigned old_nr_samples = sctx->framebuffer.nr_samples;
 	int i;
 
-	if (sctx->framebuffer.state.nr_cbufs) {
-		sctx->b.flags |= R600_CONTEXT_FLUSH_AND_INV_CB |
-				 R600_CONTEXT_FLUSH_AND_INV_CB_META;
-	}
-	if (sctx->framebuffer.state.zsbuf) {
-		sctx->b.flags |= R600_CONTEXT_FLUSH_AND_INV_DB |
-				 R600_CONTEXT_FLUSH_AND_INV_DB_META;
-	}
+	/* Only flush TC when changing the framebuffer state, because
+	 * the only client not using TC that can change textures is
+	 * the framebuffer.
+	 *
+	 * Flush all CB and DB caches here because all buffers can be used
+	 * for write by both TC (with shader image stores) and CB/DB.
+	 */
+	sctx->b.flags |= SI_CONTEXT_INV_TC_L1 |
+			 SI_CONTEXT_INV_TC_L2 |
+			 SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER;
 
 	util_copy_framebuffer_state(&sctx->framebuffer.state, state);
 
@@ -2754,8 +2755,9 @@ static void si_texture_barrier(struct pipe_context *ctx)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
 
-	sctx->b.flags |= R600_CONTEXT_INV_TEX_CACHE |
-			 R600_CONTEXT_FLUSH_AND_INV_CB;
+	sctx->b.flags |= SI_CONTEXT_INV_TC_L1 |
+			 SI_CONTEXT_INV_TC_L2 |
+			 SI_CONTEXT_FLUSH_AND_INV_CB;
 }
 
 static void *si_create_blend_custom(struct si_context *sctx, unsigned mode)
@@ -3085,5 +3087,5 @@ void si_init_config(struct si_context *sctx)
 		si_pm4_set_reg(pm4, R_00B01C_SPI_SHADER_PGM_RSRC3_PS, S_00B01C_CU_EN(0xffff));
 	}
 
-	si_pm4_set_state(sctx, init, pm4);
+	sctx->init_config = pm4;
 }

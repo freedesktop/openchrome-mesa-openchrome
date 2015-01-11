@@ -25,9 +25,13 @@
 #include "si_public.h"
 #include "sid.h"
 
+#include "radeon/radeon_llvm_emit.h"
 #include "radeon/radeon_uvd.h"
 #include "util/u_memory.h"
 #include "vl/vl_decoder.h"
+
+#include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
 
 /*
  * pipe_context
@@ -43,6 +47,7 @@ static void si_destroy_context(struct pipe_context *context)
 	pipe_resource_reference(&sctx->null_const_buf.buffer, NULL);
 	r600_resource_reference(&sctx->border_color_table, NULL);
 
+	si_pm4_free_state(sctx, sctx->init_config, ~0);
 	si_pm4_delete_state(sctx, gs_rings, sctx->gs_rings);
 	si_pm4_delete_state(sctx, gs_onoff, sctx->gs_on);
 	si_pm4_delete_state(sctx, gs_onoff, sctx->gs_off);
@@ -150,7 +155,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, void *
 
 		/* Clear the NULL constant buffer, because loads should return zeros. */
 		sctx->b.clear_buffer(&sctx->b.b, sctx->null_const_buf.buffer, 0,
-				     sctx->null_const_buf.buffer->width0, 0);
+				     sctx->null_const_buf.buffer->width0, 0, false);
 	}
 
 	return &sctx->b.b;
@@ -419,6 +424,12 @@ static void si_destroy_screen(struct pipe_screen* pscreen)
 	if (!sscreen->b.ws->unref(sscreen->b.ws))
 		return;
 
+#if HAVE_LLVM >= 0x0306
+	// r600_destroy_common_screen() frees sscreen, so we need to make
+	// sure to dispose the TargetMachine before we call it.
+	LLVMDisposeTargetMachine(sscreen->tm);
+#endif
+
 	r600_destroy_common_screen(&sscreen->b);
 }
 
@@ -476,6 +487,12 @@ static bool si_initialize_pipe_config(struct si_screen *sscreen)
 struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws)
 {
 	struct si_screen *sscreen = CALLOC_STRUCT(si_screen);
+	LLVMTargetRef r600_target;
+#if HAVE_LLVM >= 0x0306
+	const char *triple = "amdgcn--";
+#else
+	const char *triple = "r600--";
+#endif
 	if (sscreen == NULL) {
 		return NULL;
 	}
@@ -503,5 +520,13 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws)
 	/* Create the auxiliary context. This must be done last. */
 	sscreen->b.aux_context = sscreen->b.b.context_create(&sscreen->b.b, NULL);
 
+#if HAVE_LLVM >= 0x0306
+	/* Initialize LLVM TargetMachine */
+	r600_target = radeon_llvm_get_r600_target(triple);
+	sscreen->tm = LLVMCreateTargetMachine(r600_target, triple,
+				r600_get_llvm_processor_name(sscreen->b.family),
+				"+DumpCode", LLVMCodeGenLevelDefault, LLVMRelocDefault,
+				LLVMCodeModelDefault);
+#endif
 	return &sscreen->b.b;
 }

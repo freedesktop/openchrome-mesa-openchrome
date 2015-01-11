@@ -475,8 +475,8 @@ nvc0_magic_3d_init(struct nouveau_pushbuf *push, uint16_t obj_class)
    BEGIN_NVC0(push, SUBC_3D(0x1610), 1);
    PUSH_DATA (push, 0xe);
 
-   BEGIN_NVC0(push, SUBC_3D(0x164c), 1);
-   PUSH_DATA (push, 1 << 12);
+   BEGIN_NVC0(push, NVC0_3D(VERTEX_ID_GEN_MODE), 1);
+   PUSH_DATA (push, NVC0_3D_VERTEX_ID_GEN_MODE_DRAW_ARRAYS_ADD_START);
    BEGIN_NVC0(push, SUBC_3D(0x030c), 1);
    PUSH_DATA (push, 0);
    BEGIN_NVC0(push, SUBC_3D(0x0300), 1);
@@ -696,10 +696,10 @@ nvc0_screen_create(struct nouveau_device *dev)
 
    BEGIN_NVC0(push, SUBC_2D(NV01_SUBCHAN_OBJECT), 1);
    PUSH_DATA (push, screen->eng2d->oclass);
-   BEGIN_NVC0(push, NVC0_2D(SINGLE_GPC), 1);
+   BEGIN_NVC0(push, SUBC_2D(NVC0_2D_SINGLE_GPC), 1);
    PUSH_DATA (push, 0);
    BEGIN_NVC0(push, NVC0_2D(OPERATION), 1);
-   PUSH_DATA (push, NVC0_2D_OPERATION_SRCCOPY);
+   PUSH_DATA (push, NV50_2D_OPERATION_SRCCOPY);
    BEGIN_NVC0(push, NVC0_2D(CLIP_ENABLE), 1);
    PUSH_DATA (push, 0);
    BEGIN_NVC0(push, NVC0_2D(COLOR_KEY_ENABLE), 1);
@@ -709,7 +709,7 @@ nvc0_screen_create(struct nouveau_device *dev)
    BEGIN_NVC0(push, SUBC_2D(0x0888), 1);
    PUSH_DATA (push, 1);
    BEGIN_NVC0(push, NVC0_2D(COND_MODE), 1);
-   PUSH_DATA (push, NVC0_2D_COND_MODE_ALWAYS);
+   PUSH_DATA (push, NV50_2D_COND_MODE_ALWAYS);
 
    BEGIN_NVC0(push, SUBC_2D(NVC0_GRAPH_NOTIFY_ADDRESS_HIGH), 2);
    PUSH_DATAh(push, screen->fence.bo->offset + 16);

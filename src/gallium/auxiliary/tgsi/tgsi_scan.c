@@ -130,6 +130,7 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                /* check for indirect register reads */
                if (src->Register.Indirect) {
                   info->indirect_files |= (1 << src->Register.File);
+                  info->indirect_files_read |= (1 << src->Register.File);
                }
 
                /* MSAA samplers */
@@ -150,6 +151,7 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                const struct tgsi_full_dst_register *dst = &fullinst->Dst[i];
                if (dst->Register.Indirect) {
                   info->indirect_files |= (1 << dst->Register.File);
+                  info->indirect_files_written |= (1 << dst->Register.File);
                }
             }
 
@@ -163,6 +165,8 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                = &parse.FullToken.FullDeclaration;
             const uint file = fulldecl->Declaration.File;
             uint reg;
+            if (fulldecl->Declaration.Array)
+               info->array_max[file] = MAX2(info->array_max[file], fulldecl->Array.ArrayID);
             for (reg = fulldecl->Range.First;
                  reg <= fulldecl->Range.Last;
                  reg++) {
@@ -190,6 +194,9 @@ tgsi_scan_shader(const struct tgsi_token *tokens,
                   info->input_interpolate_loc[reg] = (ubyte)fulldecl->Interp.Location;
                   info->input_cylindrical_wrap[reg] = (ubyte)fulldecl->Interp.CylindricalWrap;
                   info->num_inputs++;
+
+                  if (fulldecl->Interp.Location == TGSI_INTERPOLATE_LOC_CENTROID)
+                     info->uses_centroid = TRUE;
 
                   if (semName == TGSI_SEMANTIC_PRIMID)
                      info->uses_primid = TRUE;

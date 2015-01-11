@@ -64,7 +64,6 @@ struct si_state_rasterizer {
 	unsigned		pa_sc_line_stipple;
 	unsigned		pa_su_sc_mode_cntl;
 	unsigned		pa_cl_clip_cntl;
-	unsigned		pa_cl_vs_out_cntl;
 	unsigned		clip_plane_enable;
 	float			offset_units;
 	float			offset_scale;
@@ -72,7 +71,6 @@ struct si_state_rasterizer {
 
 struct si_state_dsa {
 	struct si_pm4_state	pm4;
-	float			alpha_ref;
 	unsigned		alpha_func;
 	uint8_t			valuemask[2];
 	uint8_t			writemask[2];
@@ -88,7 +86,6 @@ struct si_vertex_element
 
 union si_state {
 	struct {
-		struct si_pm4_state		*init;
 		struct si_state_blend		*blend;
 		struct si_pm4_state		*blend_color;
 		struct si_pm4_state		*clip;
@@ -241,7 +238,7 @@ void si_release_all_descriptors(struct si_context *sctx);
 void si_all_descriptors_begin_new_cs(struct si_context *sctx);
 void si_copy_buffer(struct si_context *sctx,
 		    struct pipe_resource *dst, struct pipe_resource *src,
-		    uint64_t dst_offset, uint64_t src_offset, unsigned size);
+		    uint64_t dst_offset, uint64_t src_offset, unsigned size, bool is_framebuffer);
 void si_upload_const_buffer(struct si_context *sctx, struct r600_resource **rbuffer,
 			    const uint8_t *ptr, unsigned size, uint32_t *const_offset);
 

@@ -499,6 +499,12 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 	switch (param) {
 	case PIPE_COMPUTE_CAP_IR_TARGET: {
 		const char *gpu;
+		const char *triple;
+		if (rscreen->family <= CHIP_ARUBA || HAVE_LLVM < 0x0306) {
+			triple = "r600--";
+		} else {
+			triple = "amdgcn--";
+		}
 		switch(rscreen->family) {
 		/* Clang < 3.6 is missing Hainan in its list of
 		 * GPUs, so we need to use the name of a similar GPU.
@@ -513,9 +519,10 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 			break;
 		}
 		if (ret) {
-			sprintf(ret, "%s-r600--", gpu);
+			sprintf(ret, "%s-%s", gpu, triple);
+
 		}
-		return (8 + strlen(gpu)) * sizeof(char);
+		return (strlen(triple) + strlen(gpu)) * sizeof(char);
 	}
 	case PIPE_COMPUTE_CAP_GRID_DIMENSION:
 		if (ret) {
@@ -905,12 +912,13 @@ bool r600_can_dump_shader(struct r600_common_screen *rscreen,
 }
 
 void r600_screen_clear_buffer(struct r600_common_screen *rscreen, struct pipe_resource *dst,
-			      unsigned offset, unsigned size, unsigned value)
+			      unsigned offset, unsigned size, unsigned value,
+			      bool is_framebuffer)
 {
 	struct r600_common_context *rctx = (struct r600_common_context*)rscreen->aux_context;
 
 	pipe_mutex_lock(rscreen->aux_context_lock);
-	rctx->clear_buffer(&rctx->b, dst, offset, size, value);
+	rctx->clear_buffer(&rctx->b, dst, offset, size, value, is_framebuffer);
 	rscreen->aux_context->flush(rscreen->aux_context, NULL, 0);
 	pipe_mutex_unlock(rscreen->aux_context_lock);
 }

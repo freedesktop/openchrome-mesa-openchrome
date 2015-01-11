@@ -3177,7 +3177,7 @@ _mesa_meta_GetTexImage(struct gl_context *ctx,
 {
    if (_mesa_is_format_compressed(texImage->TexFormat)) {
       GLuint slice;
-      bool result;
+      bool result = true;
 
       for (slice = 0; slice < texImage->Depth; slice++) {
          void *dst;
@@ -3208,7 +3208,7 @@ _mesa_meta_GetTexImage(struct gl_context *ctx,
          return;
    }
 
-   _mesa_get_teximage(ctx, format, type, pixels, texImage);
+   _mesa_GetTexImage_sw(ctx, format, type, pixels, texImage);
 }
 
 

@@ -363,28 +363,37 @@ static void si_emit_draw_packets(struct si_context *sctx,
 	}
 }
 
+#define BOTH_ICACHE_KCACHE (SI_CONTEXT_INV_ICACHE | SI_CONTEXT_INV_KCACHE)
+
 void si_emit_cache_flush(struct r600_common_context *sctx, struct r600_atom *atom)
 {
 	struct radeon_winsys_cs *cs = sctx->rings.gfx.cs;
 	uint32_t cp_coher_cntl = 0;
+	uint32_t sqc_caches = 0;
 	uint32_t compute =
-		PKT3_SHADER_TYPE_S(!!(sctx->flags & R600_CONTEXT_FLAG_COMPUTE));
+		PKT3_SHADER_TYPE_S(!!(sctx->flags & SI_CONTEXT_FLAG_COMPUTE));
 
-	/* XXX SI flushes both ICACHE and KCACHE if either flag is set.
-	 * XXX CIK shouldn't have this issue. Test CIK before separating the flags
-	 * XXX to ensure there is no regression. Also find out if there is another
-	 * XXX way to flush either ICACHE or KCACHE but not both for SI. */
-	if (sctx->flags & (R600_CONTEXT_INV_SHADER_CACHE |
-			   R600_CONTEXT_INV_CONST_CACHE)) {
-		cp_coher_cntl |= S_0085F0_SH_ICACHE_ACTION_ENA(1) |
-				 S_0085F0_SH_KCACHE_ACTION_ENA(1);
+	/* SI has a bug that it always flushes ICACHE and KCACHE if either
+	 * bit is set. An alternative way is to write SQC_CACHES. */
+	if (sctx->chip_class == SI &&
+	    sctx->flags & BOTH_ICACHE_KCACHE &&
+	    (sctx->flags & BOTH_ICACHE_KCACHE) != BOTH_ICACHE_KCACHE) {
+		sqc_caches =
+			S_008C08_INST_INVALIDATE(!!(sctx->flags & SI_CONTEXT_INV_ICACHE)) |
+			S_008C08_DATA_INVALIDATE(!!(sctx->flags & SI_CONTEXT_INV_KCACHE));
+	} else {
+		if (sctx->flags & SI_CONTEXT_INV_ICACHE)
+			cp_coher_cntl |= S_0085F0_SH_ICACHE_ACTION_ENA(1);
+		if (sctx->flags & SI_CONTEXT_INV_KCACHE)
+			cp_coher_cntl |= S_0085F0_SH_KCACHE_ACTION_ENA(1);
 	}
-	if (sctx->flags & (R600_CONTEXT_INV_TEX_CACHE |
-			   R600_CONTEXT_STREAMOUT_FLUSH)) {
-		cp_coher_cntl |= S_0085F0_TC_ACTION_ENA(1) |
-				 S_0085F0_TCL1_ACTION_ENA(1);
-	}
-	if (sctx->flags & R600_CONTEXT_FLUSH_AND_INV_CB) {
+
+	if (sctx->flags & SI_CONTEXT_INV_TC_L1)
+		cp_coher_cntl |= S_0085F0_TCL1_ACTION_ENA(1);
+	if (sctx->flags & SI_CONTEXT_INV_TC_L2)
+		cp_coher_cntl |= S_0085F0_TC_ACTION_ENA(1);
+
+	if (sctx->flags & SI_CONTEXT_FLUSH_AND_INV_CB) {
 		cp_coher_cntl |= S_0085F0_CB_ACTION_ENA(1) |
 				 S_0085F0_CB0_DEST_BASE_ENA(1) |
 			         S_0085F0_CB1_DEST_BASE_ENA(1) |
@@ -395,11 +404,59 @@ void si_emit_cache_flush(struct r600_common_context *sctx, struct r600_atom *ato
 			         S_0085F0_CB6_DEST_BASE_ENA(1) |
 			         S_0085F0_CB7_DEST_BASE_ENA(1);
 	}
-	if (sctx->flags & R600_CONTEXT_FLUSH_AND_INV_DB) {
+	if (sctx->flags & SI_CONTEXT_FLUSH_AND_INV_DB) {
 		cp_coher_cntl |= S_0085F0_DB_ACTION_ENA(1) |
 				 S_0085F0_DB_DEST_BASE_ENA(1);
 	}
 
+	if (sctx->flags & SI_CONTEXT_FLUSH_AND_INV_CB_META) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_CB_META) | EVENT_INDEX(0));
+	}
+	if (sctx->flags & SI_CONTEXT_FLUSH_AND_INV_DB_META) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_DB_META) | EVENT_INDEX(0));
+	}
+	if (sctx->flags & SI_CONTEXT_FLUSH_WITH_INV_L2) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH) | EVENT_INDEX(7) |
+				EVENT_WRITE_INV_L2);
+        }
+
+	/* FLUSH_AND_INV events must be emitted before PS_PARTIAL_FLUSH.
+	 * Otherwise, clearing CMASK (CB meta) with CP DMA isn't reliable.
+	 *
+	 * I think the reason is that FLUSH_AND_INV is only added to a queue
+	 * and it is PS_PARTIAL_FLUSH that waits for it to complete.
+	 */
+	if (sctx->flags & SI_CONTEXT_PS_PARTIAL_FLUSH) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_PS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+	} else if (sctx->flags & SI_CONTEXT_VS_PARTIAL_FLUSH) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+	}
+	if (sctx->flags & SI_CONTEXT_CS_PARTIAL_FLUSH) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_CS_PARTIAL_FLUSH | EVENT_INDEX(4)));
+	}
+	if (sctx->flags & SI_CONTEXT_VGT_FLUSH) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
+	}
+	if (sctx->flags & SI_CONTEXT_VGT_STREAMOUT_SYNC) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
+		radeon_emit(cs, EVENT_TYPE(V_028A90_VGT_STREAMOUT_SYNC) | EVENT_INDEX(0));
+	}
+
+	/* SURFACE_SYNC must be emitted after partial flushes.
+	 * It looks like SURFACE_SYNC flushes caches immediately and doesn't
+	 * wait for any engines. This should be last.
+	 */
+	if (sqc_caches) {
+		r600_write_config_reg(cs, R_008C08_SQC_CACHES, sqc_caches);
+		cs->buf[cs->cdw-3] |= compute; /* set the compute bit in the header */
+	}
 	if (cp_coher_cntl) {
 		if (sctx->chip_class >= CIK) {
 			radeon_emit(cs, PKT3(PKT3_ACQUIRE_MEM, 5, 0) | compute);
@@ -418,48 +475,10 @@ void si_emit_cache_flush(struct r600_common_context *sctx, struct r600_atom *ato
 		}
 	}
 
-	if (sctx->flags & R600_CONTEXT_FLUSH_AND_INV_CB_META) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_CB_META) | EVENT_INDEX(0));
-	}
-	if (sctx->flags & R600_CONTEXT_FLUSH_AND_INV_DB_META) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_FLUSH_AND_INV_DB_META) | EVENT_INDEX(0));
-	}
-	if (sctx->flags & R600_CONTEXT_FLUSH_WITH_INV_L2) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH) | EVENT_INDEX(7) |
-				EVENT_WRITE_INV_L2);
-        }
-
-	if (sctx->flags & (R600_CONTEXT_WAIT_3D_IDLE |
-			   R600_CONTEXT_PS_PARTIAL_FLUSH)) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_PS_PARTIAL_FLUSH) | EVENT_INDEX(4));
-	} else if (sctx->flags & R600_CONTEXT_STREAMOUT_FLUSH) {
-		/* Needed if streamout buffers are going to be used as a source. */
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_VS_PARTIAL_FLUSH) | EVENT_INDEX(4));
-	}
-
-	if (sctx->flags & R600_CONTEXT_CS_PARTIAL_FLUSH) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_CS_PARTIAL_FLUSH | EVENT_INDEX(4)));
-	}
-
-	if (sctx->flags & R600_CONTEXT_VGT_FLUSH) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_VGT_FLUSH) | EVENT_INDEX(0));
-	}
-	if (sctx->flags & R600_CONTEXT_VGT_STREAMOUT_SYNC) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0) | compute);
-		radeon_emit(cs, EVENT_TYPE(V_028A90_VGT_STREAMOUT_SYNC) | EVENT_INDEX(0));
-	}
-
 	sctx->flags = 0;
 }
 
-const struct r600_atom si_atom_cache_flush = { si_emit_cache_flush, 21 }; /* number of CS dwords */
+const struct r600_atom si_atom_cache_flush = { si_emit_cache_flush, 24 }; /* number of CS dwords */
 
 static void si_get_draw_start_count(struct si_context *sctx,
 				    const struct pipe_draw_info *info,
@@ -543,6 +562,11 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 		}
 	}
 
+	if (info->indexed && r600_resource(ib.buffer)->TC_L2_dirty) {
+		sctx->b.flags |= SI_CONTEXT_INV_TC_L2;
+		r600_resource(ib.buffer)->TC_L2_dirty = false;
+	}
+
 	/* Check flush flags. */
 	if (sctx->b.flags)
 		sctx->atoms.s.cache_flush->dirty = true;
@@ -573,7 +597,7 @@ void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info)
 	if (sctx->b.family == CHIP_HAWAII &&
 	    (sctx->b.streamout.streamout_enabled ||
 	     sctx->b.streamout.prims_gen_query_enabled)) {
-		sctx->b.flags |= R600_CONTEXT_VGT_STREAMOUT_SYNC;
+		sctx->b.flags |= SI_CONTEXT_VGT_STREAMOUT_SYNC;
 	}
 
 	/* Set the depth buffer as dirty. */

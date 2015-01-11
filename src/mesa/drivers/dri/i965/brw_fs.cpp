@@ -2994,6 +2994,14 @@ fs_visitor::lower_uniform_pull_constant_loads()
          const_offset_reg.fixed_hw_reg.dw1.ud /= 4;
          fs_reg payload = fs_reg(this, glsl_type::uint_type);
 
+         /* We have to use a message header on Skylake to get SIMD4x2 mode.
+          * Reserve space for the register.
+          */
+         if (brw->gen >= 9) {
+            payload.reg_offset++;
+            virtual_grf_sizes[payload.reg] = 2;
+         }
+
          /* This is actually going to be a MOV, but since only the first dword
           * is accessed, we have a special opcode to do just that one.  Note
           * that this needs to be an operation that will be considered a def
@@ -3912,9 +3920,10 @@ brw_fs_precompile(struct gl_context *ctx,
                                          BRW_FS_VARYING_INPUT_MASK) > 16)
       key.input_slots_valid = fp->Base.InputsRead | VARYING_BIT_POS;
 
+   const bool has_shader_channel_select = brw->is_haswell || brw->gen >= 8;
    unsigned sampler_count = _mesa_fls(fp->Base.SamplersUsed);
    for (unsigned i = 0; i < sampler_count; i++) {
-      if (fp->Base.ShadowSamplers & (1 << i)) {
+      if (!has_shader_channel_select && (fp->Base.ShadowSamplers & (1 << i))) {
          /* Assume DEPTH_TEXTURE_MODE is the default: X, X, X, 1 */
          key.tex.swizzles[i] =
             MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_X, SWIZZLE_X, SWIZZLE_ONE);

@@ -44,8 +44,8 @@
 #include "texcompress.h"
 #include "texgetimage.h"
 #include "teximage.h"
+#include "texobj.h"
 #include "texstore.h"
-
 
 
 /**
@@ -631,9 +631,9 @@ get_tex_memcpy(struct gl_context *ctx, GLenum format, GLenum type,
  * unmap with ctx->Driver.UnmapTextureImage().
  */
 void
-_mesa_get_teximage(struct gl_context *ctx,
-                   GLenum format, GLenum type, GLvoid *pixels,
-                   struct gl_texture_image *texImage)
+_mesa_GetTexImage_sw(struct gl_context *ctx,
+                     GLenum format, GLenum type, GLvoid *pixels,
+                     struct gl_texture_image *texImage)
 {
    const GLuint dimensions =
       _mesa_get_texture_dimensions(texImage->TexObject->Target);
@@ -689,9 +689,9 @@ _mesa_get_teximage(struct gl_context *ctx,
  * All error checking will have been done before this routine is called.
  */
 void
-_mesa_get_compressed_teximage(struct gl_context *ctx,
-                              struct gl_texture_image *texImage,
-                              GLvoid *img)
+_mesa_GetCompressedTexImage_sw(struct gl_context *ctx,
+                               struct gl_texture_image *texImage,
+                               GLvoid *img)
 {
    const GLuint dimensions =
       _mesa_get_texture_dimensions(texImage->TexObject->Target);
@@ -758,24 +758,17 @@ _mesa_get_compressed_teximage(struct gl_context *ctx,
 
 
 /**
- * Validate the texture target enum supplied to glTexImage or
- * glCompressedTexImage.
+ * Validate the texture target enum supplied to glGetTex(ture)Image or
+ * glGetCompressedTex(ture)Image.
  */
 static GLboolean
-legal_getteximage_target(struct gl_context *ctx, GLenum target)
+legal_getteximage_target(struct gl_context *ctx, GLenum target, bool dsa)
 {
    switch (target) {
    case GL_TEXTURE_1D:
    case GL_TEXTURE_2D:
    case GL_TEXTURE_3D:
       return GL_TRUE;
-   case GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB:
-   case GL_TEXTURE_CUBE_MAP_NEGATIVE_X_ARB:
-   case GL_TEXTURE_CUBE_MAP_POSITIVE_Y_ARB:
-   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y_ARB:
-   case GL_TEXTURE_CUBE_MAP_POSITIVE_Z_ARB:
-   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_ARB:
-      return ctx->Extensions.ARB_texture_cube_map;
    case GL_TEXTURE_RECTANGLE_NV:
       return ctx->Extensions.NV_texture_rectangle;
    case GL_TEXTURE_1D_ARRAY_EXT:
@@ -783,6 +776,24 @@ legal_getteximage_target(struct gl_context *ctx, GLenum target)
       return ctx->Extensions.EXT_texture_array;
    case GL_TEXTURE_CUBE_MAP_ARRAY:
       return ctx->Extensions.ARB_texture_cube_map_array;
+
+   /* Section 8.11 (Texture Queries) of the OpenGL 4.5 core profile spec
+    * (30.10.2014) says:
+    *    "An INVALID_ENUM error is generated if the effective target is not
+    *    one of TEXTURE_1D, TEXTURE_2D, TEXTURE_3D, TEXTURE_1D_ARRAY,
+    *    TEXTURE_2D_ARRAY, TEXTURE_CUBE_MAP_ARRAY, TEXTURE_RECTANGLE, one of
+    *    the targets from table 8.19 (for GetTexImage and GetnTexImage *only*),
+    *    or TEXTURE_CUBE_MAP (for GetTextureImage *only*)." (Emphasis added.)
+    */
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_X_ARB:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_Y_ARB:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y_ARB:
+   case GL_TEXTURE_CUBE_MAP_POSITIVE_Z_ARB:
+   case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z_ARB:
+      return dsa ? GL_FALSE : ctx->Extensions.ARB_texture_cube_map;
+   case GL_TEXTURE_CUBE_MAP:
+      return dsa ? GL_TRUE : GL_FALSE;
    default:
       return GL_FALSE;
    }
@@ -790,84 +801,74 @@ legal_getteximage_target(struct gl_context *ctx, GLenum target)
 
 
 /**
- * Do error checking for a glGetTexImage() call.
+ * Do error checking for a glGetTex(ture)Image() call.
  * \return GL_TRUE if any error, GL_FALSE if no errors.
  */
 static GLboolean
-getteximage_error_check(struct gl_context *ctx, GLenum target, GLint level,
+getteximage_error_check(struct gl_context *ctx,
+                        struct gl_texture_image *texImage,
+                        GLenum target, GLint level,
                         GLenum format, GLenum type, GLsizei clientMemSize,
-                        GLvoid *pixels )
+                        GLvoid *pixels, bool dsa)
 {
-   struct gl_texture_object *texObj;
-   struct gl_texture_image *texImage;
    const GLint maxLevels = _mesa_max_texture_levels(ctx, target);
    const GLuint dimensions = (target == GL_TEXTURE_3D) ? 3 : 2;
-   GLenum baseFormat, err;
+   GLenum baseFormat;
+   const char *suffix = dsa ? "ture" : "";
 
-   if (!legal_getteximage_target(ctx, target)) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glGetTexImage(target=0x%x)", target);
-      return GL_TRUE;
-   }
-
+   assert(texImage);
    assert(maxLevels != 0);
    if (level < 0 || level >= maxLevels) {
-      _mesa_error( ctx, GL_INVALID_VALUE, "glGetTexImage(level)" );
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glGetTex%sImage(level out of range)", suffix);
       return GL_TRUE;
    }
 
-   err = _mesa_error_check_format_and_type(ctx, format, type);
-   if (err != GL_NO_ERROR) {
-      _mesa_error(ctx, err, "glGetTexImage(format/type)");
-      return GL_TRUE;
-   }
-
-   texObj = _mesa_get_current_tex_object(ctx, target);
-
-   if (!texObj) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glGetTexImage(target)");
-      return GL_TRUE;
-   }
-
-   texImage = _mesa_select_tex_image(ctx, texObj, target, level);
-   if (!texImage) {
-      /* non-existant texture image */
-      return GL_TRUE;
-   }
+   /*
+    * Format and type checking has been moved up to GetnTexImage and
+    * GetTextureImage so that it happens before getting the texImage object.
+    */
 
    baseFormat = _mesa_get_format_base_format(texImage->TexFormat);
-      
+
    /* Make sure the requested image format is compatible with the
     * texture's format.
     */
    if (_mesa_is_color_format(format)
        && !_mesa_is_color_format(baseFormat)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetTexImage(format mismatch)");
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetTex%sImage(format mismatch)", suffix);
       return GL_TRUE;
    }
    else if (_mesa_is_depth_format(format)
             && !_mesa_is_depth_format(baseFormat)
             && !_mesa_is_depthstencil_format(baseFormat)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetTexImage(format mismatch)");
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetTex%sImage(format mismatch)", suffix);
       return GL_TRUE;
    }
    else if (_mesa_is_stencil_format(format)
             && !ctx->Extensions.ARB_texture_stencil8) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glGetTexImage(format=GL_STENCIL_INDEX)");
+      _mesa_error(ctx, GL_INVALID_ENUM,
+                  "glGetTex%sImage(format=GL_STENCIL_INDEX)", suffix);
       return GL_TRUE;
    }
    else if (_mesa_is_ycbcr_format(format)
             && !_mesa_is_ycbcr_format(baseFormat)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetTexImage(format mismatch)");
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetTex%sImage(format mismatch)", suffix);
       return GL_TRUE;
    }
    else if (_mesa_is_depthstencil_format(format)
             && !_mesa_is_depthstencil_format(baseFormat)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetTexImage(format mismatch)");
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetTex%sImage(format mismatch)", suffix);
       return GL_TRUE;
    }
    else if (_mesa_is_enum_format_integer(format) !=
             _mesa_is_format_integer(texImage->TexFormat)) {
-      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetTexImage(format mismatch)");
+      _mesa_error(ctx, GL_INVALID_OPERATION,
+                  "glGetTex%sImage(format mismatch)", suffix);
       return GL_TRUE;
    }
 
@@ -876,11 +877,13 @@ getteximage_error_check(struct gl_context *ctx, GLenum target, GLint level,
                                   format, type, clientMemSize, pixels)) {
       if (_mesa_is_bufferobj(ctx->Pack.BufferObj)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glGetTexImage(out of bounds PBO access)");
+                     "glGetTex%sImage(out of bounds PBO access)", suffix);
       } else {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glGetnTexImageARB(out of bounds access:"
-                     " bufSize (%d) is too small)", clientMemSize);
+                     "%s(out of bounds access:"
+                     " bufSize (%d) is too small)",
+                     dsa ? "glGetTextureImage" : "glGetnTexImageARB",
+                     clientMemSize);
       }
       return GL_TRUE;
    }
@@ -889,7 +892,7 @@ getteximage_error_check(struct gl_context *ctx, GLenum target, GLint level,
       /* PBO should not be mapped */
       if (_mesa_check_disallowed_mapping(ctx->Pack.BufferObj)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glGetTexImage(PBO is mapped)");
+                     "glGetTex%sImage(PBO is mapped)", suffix);
          return GL_TRUE;
       }
    }
@@ -898,9 +901,12 @@ getteximage_error_check(struct gl_context *ctx, GLenum target, GLint level,
 }
 
 
-
 /**
- * Get texture image.  Called by glGetTexImage.
+ * This is the implementation for glGetnTexImageARB, glGetTextureImage,
+ * and glGetTexImage.
+ *
+ * Requires caller to pass in texImage object because _mesa_GetTextureImage
+ * must handle the GL_TEXTURE_CUBE_MAP target.
  *
  * \param target texture target.
  * \param level image level.
@@ -908,19 +914,29 @@ getteximage_error_check(struct gl_context *ctx, GLenum target, GLint level,
  * \param type pixel data type for returned image.
  * \param bufSize size of the pixels data buffer.
  * \param pixels returned pixel data.
+ * \param dsa True when the caller is an ARB_direct_state_access function,
+ *            false otherwise
  */
-void GLAPIENTRY
-_mesa_GetnTexImageARB( GLenum target, GLint level, GLenum format,
-                       GLenum type, GLsizei bufSize, GLvoid *pixels )
+void
+_mesa_get_texture_image(struct gl_context *ctx,
+                        struct gl_texture_object *texObj,
+                        struct gl_texture_image *texImage, GLenum target,
+                        GLint level, GLenum format, GLenum type,
+                        GLsizei bufSize, GLvoid *pixels, bool dsa)
 {
-   struct gl_texture_object *texObj;
-   struct gl_texture_image *texImage;
-   GET_CURRENT_CONTEXT(ctx);
+   assert(texObj);
+   assert(texImage);
 
    FLUSH_VERTICES(ctx, 0);
 
-   if (getteximage_error_check(ctx, target, level, format, type,
-                               bufSize, pixels)) {
+   /*
+    * Legal target checking has been moved up to GetnTexImage and
+    * GetTextureImage so that it can be caught before receiving a NULL
+    * texImage object and exiting.
+    */
+
+   if (getteximage_error_check(ctx, texImage, target, level, format,
+                               type, bufSize, pixels, dsa)) {
       return;
    }
 
@@ -929,15 +945,13 @@ _mesa_GetnTexImageARB( GLenum target, GLint level, GLenum format,
       return;
    }
 
-   texObj = _mesa_get_current_tex_object(ctx, target);
-   texImage = _mesa_select_tex_image(ctx, texObj, target, level);
-
    if (_mesa_is_zero_size_texture(texImage))
       return;
 
    if (MESA_VERBOSE & (VERBOSE_API | VERBOSE_TEXTURE)) {
-      _mesa_debug(ctx, "glGetTexImage(tex %u) format = %s, w=%d, h=%d,"
+      _mesa_debug(ctx, "glGetTex%sImage(tex %u) format = %s, w=%d, h=%d,"
                   " dstFmt=0x%x, dstType=0x%x\n",
+                  dsa ? "ture": "",
                   texObj->Name,
                   _mesa_get_format_name(texImage->TexFormat),
                   texImage->Width, texImage->Height,
@@ -951,6 +965,58 @@ _mesa_GetnTexImageARB( GLenum target, GLint level, GLenum format,
    _mesa_unlock_texture(ctx, texObj);
 }
 
+/**
+ * Get texture image.  Called by glGetTexImage.
+ *
+ * \param target texture target.
+ * \param level image level.
+ * \param format pixel data format for returned image.
+ * \param type pixel data type for returned image.
+ * \param bufSize size of the pixels data buffer.
+ * \param pixels returned pixel data.
+ */
+void GLAPIENTRY
+_mesa_GetnTexImageARB(GLenum target, GLint level, GLenum format,
+                      GLenum type, GLsizei bufSize, GLvoid *pixels)
+{
+   struct gl_texture_object *texObj;
+   struct gl_texture_image *texImage;
+   GLenum err;
+   GET_CURRENT_CONTEXT(ctx);
+
+   /*
+    * This has been moved here because a format/type mismatch can cause a NULL
+    * texImage object, which in turn causes the mismatch error to be
+    * ignored.
+    */
+   err = _mesa_error_check_format_and_type(ctx, format, type);
+   if (err != GL_NO_ERROR) {
+      _mesa_error(ctx, err, "glGetnTexImage(format/type)");
+      return;
+   }
+
+   /*
+    * Legal target checking has been moved here to prevent exiting with a NULL
+    * texImage object.
+    */
+   if (!legal_getteximage_target(ctx, target, false)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glGetnTexImage(target=0x%x)",
+                  target);
+      return;
+   }
+
+   texObj = _mesa_get_current_tex_object(ctx, target);
+   if (!texObj)
+      return;
+
+   texImage = _mesa_select_tex_image(texObj, target, level);
+   if (!texImage)
+      return;
+
+   _mesa_get_texture_image(ctx, texObj, texImage, target, level, format, type,
+                           bufSize, pixels, false);
+}
+
 
 void GLAPIENTRY
 _mesa_GetTexImage( GLenum target, GLint level, GLenum format,
@@ -959,51 +1025,162 @@ _mesa_GetTexImage( GLenum target, GLint level, GLenum format,
    _mesa_GetnTexImageARB(target, level, format, type, INT_MAX, pixels);
 }
 
+/**
+ * Get texture image.
+ *
+ * \param texture texture name.
+ * \param level image level.
+ * \param format pixel data format for returned image.
+ * \param type pixel data type for returned image.
+ * \param bufSize size of the pixels data buffer.
+ * \param pixels returned pixel data.
+ */
+void GLAPIENTRY
+_mesa_GetTextureImage(GLuint texture, GLint level, GLenum format,
+                      GLenum type, GLsizei bufSize, GLvoid *pixels)
+{
+   struct gl_texture_object *texObj;
+   struct gl_texture_image *texImage;
+   int i;
+   GLint image_stride;
+   GLenum err;
+   GET_CURRENT_CONTEXT(ctx);
+
+   /*
+    * This has been moved here because a format/type mismatch can cause a NULL
+    * texImage object, which in turn causes the mismatch error to be
+    * ignored.
+    */
+   err = _mesa_error_check_format_and_type(ctx, format, type);
+   if (err != GL_NO_ERROR) {
+      _mesa_error(ctx, err, "glGetTextureImage(format/type)");
+      return;
+   }
+
+   texObj = _mesa_lookup_texture_err(ctx, texture, "glGetTextureImage");
+   if (!texObj)
+      return;
+
+   /*
+    * Legal target checking has been moved here to prevent exiting with a NULL
+    * texImage object.
+    */
+   if (!legal_getteximage_target(ctx, texObj->Target, true)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glGetTextureImage(target=%s)",
+                  _mesa_lookup_enum_by_nr(texObj->Target));
+      return;
+   }
+
+   /* Must handle special case GL_TEXTURE_CUBE_MAP. */
+   if (texObj->Target == GL_TEXTURE_CUBE_MAP) {
+
+      /* Error checking */
+      if (texObj->NumLayers < 6) {
+         /* Not enough image planes for a cube map.  The spec does not say
+          * what should happen in this case because the user has always
+          * specified each cube face separately (using
+          * GL_TEXTURE_CUBE_MAP_POSITIVE_X+i) in previous GL versions.
+          * This is addressed in Khronos Bug 13223.
+          */
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "glGetTextureImage(insufficient cube map storage)");
+         return;
+      }
+
+      /*
+       * What do we do if the user created a texture with the following code
+       * and then called this function with its handle?
+       *
+       *    GLuint tex;
+       *    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &tex);
+       *    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+       *    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, ...);
+       *    glTexImage2D(GL_TEXTURE_CUBE_MAP_NEGATIVE_X, 0, ...);
+       *    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_Y, 0, ...);
+       *    // Note: GL_TEXTURE_CUBE_MAP_NEGATIVE_Y not set, or given the
+       *    // wrong format, or given the wrong size, etc.
+       *    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_Z, 0, ...);
+       *    glTexImage2D(GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, 0, ...);
+       *
+       * A bug has been filed against the spec for this case.  In the
+       * meantime, we will check for cube completeness.
+       *
+       * According to Section 8.17 Texture Completeness in the OpenGL 4.5
+       * Core Profile spec (30.10.2014):
+       *    "[A] cube map texture is cube complete if the
+       *    following conditions all hold true: The [base level] texture
+       *    images of each of the six cube map faces have identical, positive,
+       *    and square dimensions. The [base level] images were each specified
+       *    with the same internal format."
+       *
+       * It seems reasonable to check for cube completeness of an arbitrary
+       * level here so that the returned data has a consistent format and size
+       * and therefore fits in the user's buffer.
+       */
+      if (!_mesa_cube_level_complete(texObj, level)) {
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "glGetTextureImage(cube map incomplete)");
+         return;
+      }
+
+      /* Copy each face. */
+      for (i = 0; i < 6; ++i) {
+         texImage = texObj->Image[i][level];
+         _mesa_get_texture_image(ctx, texObj, texImage, texObj->Target, level,
+                                 format, type, bufSize, pixels, true);
+
+         image_stride = _mesa_image_image_stride(&ctx->Pack, texImage->Width,
+                                                 texImage->Height, format,
+                                                 type);
+         pixels = (GLubyte *) pixels + image_stride;
+         bufSize -= image_stride;
+      }
+   }
+   else {
+      texImage = _mesa_select_tex_image(texObj, texObj->Target, level);
+      if (!texImage)
+         return;
+
+      _mesa_get_texture_image(ctx, texObj, texImage, texObj->Target, level,
+                              format, type, bufSize, pixels, true);
+   }
+}
 
 /**
  * Do error checking for a glGetCompressedTexImage() call.
  * \return GL_TRUE if any error, GL_FALSE if no errors.
  */
 static GLboolean
-getcompressedteximage_error_check(struct gl_context *ctx, GLenum target,
-                                  GLint level, GLsizei clientMemSize, GLvoid *img)
+getcompressedteximage_error_check(struct gl_context *ctx,
+                                  struct gl_texture_image *texImage,
+                                  GLenum target,
+                                  GLint level, GLsizei clientMemSize,
+                                  GLvoid *img, bool dsa)
 {
-   struct gl_texture_object *texObj;
-   struct gl_texture_image *texImage;
    const GLint maxLevels = _mesa_max_texture_levels(ctx, target);
    GLuint compressedSize, dimensions;
+   const char *suffix = dsa ? "ture" : "";
 
-   if (!legal_getteximage_target(ctx, target)) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glGetCompressedTexImage(target=0x%x)",
-                  target);
+   assert(texImage);
+
+   if (!legal_getteximage_target(ctx, target, dsa)) {
+      _mesa_error(ctx, GL_INVALID_ENUM,
+                  "glGetCompressedTex%sImage(target=%s)", suffix,
+                  _mesa_lookup_enum_by_nr(target));
       return GL_TRUE;
    }
 
    assert(maxLevels != 0);
    if (level < 0 || level >= maxLevels) {
       _mesa_error(ctx, GL_INVALID_VALUE,
-                  "glGetCompressedTexImageARB(bad level = %d)", level);
-      return GL_TRUE;
-   }
-
-   texObj = _mesa_get_current_tex_object(ctx, target);
-   if (!texObj) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glGetCompressedTexImageARB(target)");
-      return GL_TRUE;
-   }
-
-   texImage = _mesa_select_tex_image(ctx, texObj, target, level);
-
-   if (!texImage) {
-      /* probably invalid mipmap level */
-      _mesa_error(ctx, GL_INVALID_VALUE,
-                  "glGetCompressedTexImageARB(level)");
+                  "glGetCompressedTex%sImage(bad level = %d)", suffix, level);
       return GL_TRUE;
    }
 
    if (!_mesa_is_format_compressed(texImage->TexFormat)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glGetCompressedTexImageARB(texture is not compressed)");
+                  "glGetCompressedTex%sImage(texture is not compressed)",
+                  suffix);
       return GL_TRUE;
    }
 
@@ -1015,8 +1192,9 @@ getcompressedteximage_error_check(struct gl_context *ctx, GLenum target,
    /* Check for invalid pixel storage modes */
    dimensions = _mesa_get_texture_dimensions(texImage->TexObject->Target);
    if (!_mesa_compressed_pixel_storage_error_check(ctx, dimensions,
-                                              &ctx->Pack,
-                                              "glGetCompressedTexImageARB")) {
+                                              &ctx->Pack, dsa ?
+                                              "glGetCompressedTextureImage":
+                                              "glGetCompressedTexImage")) {
       return GL_TRUE;
    }
 
@@ -1024,8 +1202,9 @@ getcompressedteximage_error_check(struct gl_context *ctx, GLenum target,
       /* do bounds checking on writing to client memory */
       if (clientMemSize < (GLsizei) compressedSize) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glGetnCompressedTexImageARB(out of bounds access:"
-                     " bufSize (%d) is too small)", clientMemSize);
+                     "%s(out of bounds access: bufSize (%d) is too small)",
+                     dsa ? "glGetCompressedTextureImage" :
+                     "glGetnCompressedTexImageARB", clientMemSize);
          return GL_TRUE;
       }
    } else {
@@ -1033,14 +1212,15 @@ getcompressedteximage_error_check(struct gl_context *ctx, GLenum target,
       if ((const GLubyte *) img + compressedSize >
           (const GLubyte *) ctx->Pack.BufferObj->Size) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glGetCompressedTexImage(out of bounds PBO access)");
+                     "glGetCompressedTex%sImage(out of bounds PBO access)",
+                     suffix);
          return GL_TRUE;
       }
 
       /* make sure PBO is not mapped */
       if (_mesa_check_disallowed_mapping(ctx->Pack.BufferObj)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glGetCompressedTexImage(PBO is mapped)");
+                     "glGetCompressedTex%sImage(PBO is mapped)", suffix);
          return GL_TRUE;
       }
    }
@@ -1048,6 +1228,52 @@ getcompressedteximage_error_check(struct gl_context *ctx, GLenum target,
    return GL_FALSE;
 }
 
+/** Implements glGetnCompressedTexImageARB, glGetCompressedTexImage, and
+ * glGetCompressedTextureImage.
+ *
+ * texImage must be passed in because glGetCompressedTexImage must handle the
+ * target GL_TEXTURE_CUBE_MAP.
+ */
+void
+_mesa_get_compressed_texture_image(struct gl_context *ctx,
+                                   struct gl_texture_object *texObj,
+                                   struct gl_texture_image *texImage,
+                                   GLenum target, GLint level,
+                                   GLsizei bufSize, GLvoid *pixels,
+                                   bool dsa)
+{
+   assert(texObj);
+   assert(texImage);
+
+   FLUSH_VERTICES(ctx, 0);
+
+   if (getcompressedteximage_error_check(ctx, texImage, target, level,
+                                         bufSize, pixels, dsa)) {
+      return;
+   }
+
+   if (!_mesa_is_bufferobj(ctx->Pack.BufferObj) && !pixels) {
+      /* not an error, do nothing */
+      return;
+   }
+
+   if (_mesa_is_zero_size_texture(texImage))
+      return;
+
+   if (MESA_VERBOSE & (VERBOSE_API | VERBOSE_TEXTURE)) {
+      _mesa_debug(ctx,
+                  "glGetCompressedTex%sImage(tex %u) format = %s, w=%d, h=%d\n",
+                  dsa ? "ture" : "", texObj->Name,
+                  _mesa_get_format_name(texImage->TexFormat),
+                  texImage->Width, texImage->Height);
+   }
+
+   _mesa_lock_texture(ctx, texObj);
+   {
+      ctx->Driver.GetCompressedTexImage(ctx, texImage, pixels);
+   }
+   _mesa_unlock_texture(ctx, texObj);
+}
 
 void GLAPIENTRY
 _mesa_GetnCompressedTexImageARB(GLenum target, GLint level, GLsizei bufSize,
@@ -1057,40 +1283,77 @@ _mesa_GetnCompressedTexImageARB(GLenum target, GLint level, GLsizei bufSize,
    struct gl_texture_image *texImage;
    GET_CURRENT_CONTEXT(ctx);
 
-   FLUSH_VERTICES(ctx, 0);
-
-   if (getcompressedteximage_error_check(ctx, target, level, bufSize, img)) {
-      return;
-   }
-
-   if (!_mesa_is_bufferobj(ctx->Pack.BufferObj) && !img) {
-      /* not an error, do nothing */
-      return;
-   }
-
    texObj = _mesa_get_current_tex_object(ctx, target);
-   texImage = _mesa_select_tex_image(ctx, texObj, target, level);
-
-   if (_mesa_is_zero_size_texture(texImage))
+   if (!texObj)
       return;
 
-   if (MESA_VERBOSE & (VERBOSE_API | VERBOSE_TEXTURE)) {
-      _mesa_debug(ctx,
-                  "glGetCompressedTexImage(tex %u) format = %s, w=%d, h=%d\n",
-                  texObj->Name,
-                  _mesa_get_format_name(texImage->TexFormat),
-                  texImage->Width, texImage->Height);
-   }
+   texImage = _mesa_select_tex_image(texObj, target, level);
+   if (!texImage)
+      return;
 
-   _mesa_lock_texture(ctx, texObj);
-   {
-      ctx->Driver.GetCompressedTexImage(ctx, texImage, img);
-   }
-   _mesa_unlock_texture(ctx, texObj);
+   _mesa_get_compressed_texture_image(ctx, texObj, texImage, target, level,
+                                      bufSize, img, false);
 }
 
 void GLAPIENTRY
 _mesa_GetCompressedTexImage(GLenum target, GLint level, GLvoid *img)
 {
    _mesa_GetnCompressedTexImageARB(target, level, INT_MAX, img);
+}
+
+/**
+ * Get compressed texture image.
+ *
+ * \param texture texture name.
+ * \param level image level.
+ * \param bufSize size of the pixels data buffer.
+ * \param pixels returned pixel data.
+ */
+void GLAPIENTRY
+_mesa_GetCompressedTextureImage(GLuint texture, GLint level,
+                                GLsizei bufSize, GLvoid *pixels)
+{
+   struct gl_texture_object *texObj;
+   struct gl_texture_image *texImage;
+   int i;
+   GLint image_stride;
+   GET_CURRENT_CONTEXT(ctx);
+
+   texObj = _mesa_lookup_texture_err(ctx, texture,
+                                     "glGetCompressedTextureImage");
+   if (!texObj)
+      return;
+
+   /* Must handle special case GL_TEXTURE_CUBE_MAP. */
+   if (texObj->Target == GL_TEXTURE_CUBE_MAP) {
+      assert(texObj->NumLayers >= 6);
+
+      /* Copy each face. */
+      for (i = 0; i < 6; ++i) {
+         texImage = texObj->Image[i][level];
+         if (!texImage)
+            return;
+
+         _mesa_get_compressed_texture_image(ctx, texObj, texImage,
+                                            texObj->Target, level,
+                                            bufSize, pixels, true);
+
+         /* Compressed images don't have a client format */
+         image_stride = _mesa_format_image_size(texImage->TexFormat,
+                                                texImage->Width,
+                                                texImage->Height, 1);
+
+         pixels = (GLubyte *) pixels + image_stride;
+         bufSize -= image_stride;
+      }
+   }
+   else {
+      texImage = _mesa_select_tex_image(texObj, texObj->Target, level);
+      if (!texImage)
+         return;
+
+      _mesa_get_compressed_texture_image(ctx, texObj, texImage,
+                                         texObj->Target, level, bufSize,
+                                         pixels, true);
+   }
 }

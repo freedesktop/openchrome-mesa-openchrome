@@ -65,7 +65,7 @@ static void si_shader_es(struct si_shader *shader)
 		       S_00B328_VGPRS((shader->num_vgprs - 1) / 4) |
 		       S_00B328_SGPRS((num_sgprs - 1) / 8) |
 		       S_00B328_VGPR_COMP_CNT(vgpr_comp_cnt) |
-		       S_00B328_DX10_CLAMP(1));
+		       S_00B328_DX10_CLAMP(shader->dx10_clamp_mode));
 	si_pm4_set_reg(pm4, R_00B32C_SPI_SHADER_PGM_RSRC2_ES,
 		       S_00B32C_USER_SGPR(num_user_sgprs));
 }
@@ -134,7 +134,7 @@ static void si_shader_gs(struct si_shader *shader)
 	si_pm4_set_reg(pm4, R_00B228_SPI_SHADER_PGM_RSRC1_GS,
 		       S_00B228_VGPRS((shader->num_vgprs - 1) / 4) |
 		       S_00B228_SGPRS((num_sgprs - 1) / 8) |
-		       S_00B228_DX10_CLAMP(1));
+		       S_00B228_DX10_CLAMP(shader->dx10_clamp_mode));
 	si_pm4_set_reg(pm4, R_00B22C_SPI_SHADER_PGM_RSRC2_GS,
 		       S_00B22C_USER_SGPR(num_user_sgprs));
 }
@@ -209,7 +209,7 @@ static void si_shader_vs(struct si_shader *shader)
 		       S_00B128_VGPRS((shader->num_vgprs - 1) / 4) |
 		       S_00B128_SGPRS((num_sgprs - 1) / 8) |
 		       S_00B128_VGPR_COMP_CNT(vgpr_comp_cnt) |
-		       S_00B128_DX10_CLAMP(1));
+		       S_00B128_DX10_CLAMP(shader->dx10_clamp_mode));
 	si_pm4_set_reg(pm4, R_00B12C_SPI_SHADER_PGM_RSRC2_VS,
 		       S_00B12C_USER_SGPR(num_user_sgprs) |
 		       S_00B12C_SO_BASE0_EN(!!shader->selector->so.stride[0]) |
@@ -232,7 +232,7 @@ static void si_shader_ps(struct si_shader *shader)
 {
 	struct tgsi_shader_info *info = &shader->selector->info;
 	struct si_pm4_state *pm4;
-	unsigned i, spi_ps_in_control;
+	unsigned i;
 	unsigned num_sgprs, num_user_sgprs;
 	unsigned spi_baryc_cntl = 0, spi_ps_input_ena;
 	uint64_t va;
@@ -267,9 +267,6 @@ static void si_shader_ps(struct si_shader *shader)
 		}
 	}
 
-	spi_ps_in_control = S_0286D8_NUM_INTERP(shader->nparam) |
-		S_0286D8_BC_OPTIMIZE_DISABLE(1);
-
 	si_pm4_set_reg(pm4, R_0286E0_SPI_BARYC_CNTL, spi_baryc_cntl);
 	spi_ps_input_ena = shader->spi_ps_input_ena;
 	/* we need to enable at least one of them, otherwise we hang the GPU */
@@ -284,7 +281,6 @@ static void si_shader_ps(struct si_shader *shader)
 
 	si_pm4_set_reg(pm4, R_0286CC_SPI_PS_INPUT_ENA, spi_ps_input_ena);
 	si_pm4_set_reg(pm4, R_0286D0_SPI_PS_INPUT_ADDR, spi_ps_input_ena);
-	si_pm4_set_reg(pm4, R_0286D8_SPI_PS_IN_CONTROL, spi_ps_in_control);
 
 	si_pm4_set_reg(pm4, R_028710_SPI_SHADER_Z_FORMAT, shader->spi_shader_z_format);
 	si_pm4_set_reg(pm4, R_028714_SPI_SHADER_COL_FORMAT,
@@ -308,7 +304,7 @@ static void si_shader_ps(struct si_shader *shader)
 	si_pm4_set_reg(pm4, R_00B028_SPI_SHADER_PGM_RSRC1_PS,
 		       S_00B028_VGPRS((shader->num_vgprs - 1) / 4) |
 		       S_00B028_SGPRS((num_sgprs - 1) / 8) |
-		       S_00B028_DX10_CLAMP(1));
+		       S_00B028_DX10_CLAMP(shader->dx10_clamp_mode));
 	si_pm4_set_reg(pm4, R_00B02C_SPI_SHADER_PGM_RSRC2_PS,
 		       S_00B02C_EXTRA_LDS_SIZE(shader->lds_size) |
 		       S_00B02C_USER_SGPR(num_user_sgprs));
@@ -362,7 +358,6 @@ static INLINE void si_shader_selector_key(struct pipe_context *ctx,
 
 		if (sctx->queued.named.rasterizer) {
 			key->ps.color_two_side = sctx->queued.named.rasterizer->two_side;
-			key->ps.flatshade = sctx->queued.named.rasterizer->flatshade;
 
 			if (sctx->queued.named.blend) {
 				key->ps.alpha_to_one = sctx->queued.named.blend->alpha_to_one &&
@@ -624,7 +619,8 @@ static void si_update_spi_map(struct si_context *sctx)
 		unsigned interpolate = psinfo->input_interpolate[i];
 		unsigned param_offset = ps->ps_input_param_offset[i];
 
-		if (name == TGSI_SEMANTIC_POSITION)
+		if (name == TGSI_SEMANTIC_POSITION ||
+		    name == TGSI_SEMANTIC_FACE)
 			/* Read from preloaded VGPRs, not parameters */
 			continue;
 
@@ -632,10 +628,8 @@ bcolor:
 		tmp = 0;
 
 		if (interpolate == TGSI_INTERPOLATE_CONSTANT ||
-		    (interpolate == TGSI_INTERPOLATE_COLOR &&
-		     ps->key.ps.flatshade)) {
+		    (interpolate == TGSI_INTERPOLATE_COLOR && sctx->flatshade))
 			tmp |= S_028644_FLAT_SHADE(1);
-		}
 
 		if (name == TGSI_SEMANTIC_GENERIC &&
 		    sctx->sprite_coord_enable & (1 << index)) {
@@ -666,6 +660,10 @@ bcolor:
 			goto bcolor;
 		}
 	}
+
+	si_pm4_set_reg(pm4, R_0286D8_SPI_PS_IN_CONTROL,
+		       S_0286D8_NUM_INTERP(ps->nparam) |
+		       S_0286D8_BC_OPTIMIZE_DISABLE(sctx->bc_optimize_disable));
 
 	si_pm4_set_state(sctx, spi, pm4);
 }
@@ -711,6 +709,8 @@ static void si_init_gs_rings(struct si_context *sctx)
 void si_update_shaders(struct si_context *sctx)
 {
 	struct pipe_context *ctx = (struct pipe_context*)sctx;
+	struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
+	bool bc_optimize_disable;
 
 	if (sctx->gs_shader) {
 		si_shader_select(ctx, sctx->gs_shader);
@@ -725,7 +725,7 @@ void si_update_shaders(struct si_context *sctx)
 		if (!sctx->gs_rings)
 			si_init_gs_rings(sctx);
 		if (sctx->emitted.named.gs_rings != sctx->gs_rings)
-			sctx->b.flags |= R600_CONTEXT_VGT_FLUSH;
+			sctx->b.flags |= SI_CONTEXT_VGT_FLUSH;
 		si_pm4_bind_state(sctx, gs_rings, sctx->gs_rings);
 
 		si_set_ring_buffer(ctx, PIPE_SHADER_GEOMETRY, SI_RING_GSVS,
@@ -775,9 +775,18 @@ void si_update_shaders(struct si_context *sctx)
 
 	si_pm4_bind_state(sctx, ps, sctx->ps_shader->current->pm4);
 
+	/* Whether CENTER != CENTROID. */
+	bc_optimize_disable = sctx->framebuffer.nr_samples > 1 &&
+			      rs->multisample_enable &&
+			      sctx->ps_shader->info.uses_centroid;
+
 	if (si_pm4_state_changed(sctx, ps) || si_pm4_state_changed(sctx, vs) ||
-	    sctx->sprite_coord_enable != sctx->queued.named.rasterizer->sprite_coord_enable) {
-		sctx->sprite_coord_enable = sctx->queued.named.rasterizer->sprite_coord_enable;
+	    sctx->sprite_coord_enable != rs->sprite_coord_enable ||
+	    sctx->flatshade != rs->flatshade ||
+	    sctx->bc_optimize_disable != bc_optimize_disable) {
+		sctx->sprite_coord_enable = rs->sprite_coord_enable;
+		sctx->flatshade = rs->flatshade;
+		sctx->bc_optimize_disable = bc_optimize_disable;
 		si_update_spi_map(sctx);
 	}
 

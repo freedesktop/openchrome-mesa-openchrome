@@ -28,6 +28,8 @@
 
 #include "si_state.h"
 
+#include <llvm-c/TargetMachine.h>
+
 #ifdef PIPE_ARCH_BIG_ENDIAN
 #define SI_BIG_ENDIAN 1
 #else
@@ -46,10 +48,42 @@
 #define SI_MAX_DRAW_CS_DWORDS \
 	(/*derived prim state:*/ 6 + /*draw regs:*/ 16 + /*draw packets:*/ 31)
 
+/* Instruction cache. */
+#define SI_CONTEXT_INV_ICACHE		(R600_CONTEXT_PRIVATE_FLAG << 0)
+/* Cache used by scalar memory (SMEM) instructions. They also use TC
+ * as a second level cache, which isn't flushed by this.
+ * Other names: constant cache, data cache, DCACHE */
+#define SI_CONTEXT_INV_KCACHE		(R600_CONTEXT_PRIVATE_FLAG << 1)
+/* Caches used by vector memory (VMEM) instructions.
+ * L1 can optionally be bypassed (GLC=1) and can only be used by shaders.
+ * L2 is used by shaders and can be used by other blocks (CP, sDMA). */
+#define SI_CONTEXT_INV_TC_L1		(R600_CONTEXT_PRIVATE_FLAG << 2)
+#define SI_CONTEXT_INV_TC_L2		(R600_CONTEXT_PRIVATE_FLAG << 3)
+/* Framebuffer caches. */
+#define SI_CONTEXT_FLUSH_AND_INV_CB_META (R600_CONTEXT_PRIVATE_FLAG << 4)
+#define SI_CONTEXT_FLUSH_AND_INV_DB_META (R600_CONTEXT_PRIVATE_FLAG << 5)
+#define SI_CONTEXT_FLUSH_AND_INV_DB	(R600_CONTEXT_PRIVATE_FLAG << 6)
+#define SI_CONTEXT_FLUSH_AND_INV_CB	(R600_CONTEXT_PRIVATE_FLAG << 7)
+/* Engine synchronization. */
+#define SI_CONTEXT_VS_PARTIAL_FLUSH	(R600_CONTEXT_PRIVATE_FLAG << 8)
+#define SI_CONTEXT_PS_PARTIAL_FLUSH	(R600_CONTEXT_PRIVATE_FLAG << 9)
+#define SI_CONTEXT_CS_PARTIAL_FLUSH	(R600_CONTEXT_PRIVATE_FLAG << 10)
+#define SI_CONTEXT_VGT_FLUSH		(R600_CONTEXT_PRIVATE_FLAG << 11)
+#define SI_CONTEXT_VGT_STREAMOUT_SYNC	(R600_CONTEXT_PRIVATE_FLAG << 12)
+/* Compute only. */
+#define SI_CONTEXT_FLUSH_WITH_INV_L2	(R600_CONTEXT_PRIVATE_FLAG << 13) /* TODO: merge with TC? */
+#define SI_CONTEXT_FLAG_COMPUTE		(R600_CONTEXT_PRIVATE_FLAG << 14)
+
+#define SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER (SI_CONTEXT_FLUSH_AND_INV_CB | \
+					      SI_CONTEXT_FLUSH_AND_INV_CB_META | \
+					      SI_CONTEXT_FLUSH_AND_INV_DB | \
+					      SI_CONTEXT_FLUSH_AND_INV_DB_META)
+
 struct si_compute;
 
 struct si_screen {
 	struct r600_common_screen	b;
+	LLVMTargetMachineRef		tm;
 };
 
 struct si_sampler_view {
@@ -98,6 +132,7 @@ struct si_context {
 	void				*custom_blend_decompress;
 	void				*custom_blend_fastclear;
 	struct si_screen		*screen;
+	struct si_pm4_state		*init_config;
 
 	union {
 		struct {
@@ -133,6 +168,8 @@ struct si_context {
 	struct si_cs_shader_state	cs_shader_state;
 	/* shader information */
 	unsigned			sprite_coord_enable;
+	bool				flatshade;
+	bool				bc_optimize_disable;
 	struct si_descriptors		vertex_buffers;
 	struct si_buffer_resources	const_buffers[SI_NUM_SHADERS];
 	struct si_buffer_resources	rw_buffers[SI_NUM_SHADERS];
@@ -143,8 +180,6 @@ struct si_context {
 	struct r600_atom		clip_regs;
 	struct r600_atom		msaa_config;
 	int				ps_iter_samples;
-
-	unsigned default_ps_gprs, default_vs_gprs;
 
 	/* Vertex and index buffers. */
 	bool			vertex_buffers_dirty;

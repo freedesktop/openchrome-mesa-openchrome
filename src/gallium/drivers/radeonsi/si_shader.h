@@ -123,7 +123,6 @@ union si_shader_key {
 		unsigned	last_cbuf:3;
 		unsigned	color_two_side:1;
 		unsigned	alpha_func:3;
-		unsigned	flatshade:1;
 		unsigned	alpha_to_one:1;
 	} ps;
 	struct {
@@ -161,6 +160,7 @@ struct si_shader {
 	bool			uses_instanceid;
 	unsigned		nr_pos_exports;
 	bool			is_gs_copy_shader;
+	bool			dx10_clamp_mode; /* convert NaNs to 0 */
 };
 
 static inline struct tgsi_shader_info *si_get_vs_info(struct si_context *sctx)
