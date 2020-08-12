@@ -33,10 +33,9 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
 #include "main/glheader.h"
-#include "main/imports.h"
+
 #include "main/mtypes.h"
 #include "main/enums.h"
-#include "main/colormac.h"
 #include "main/light.h"
 #include "main/state.h"
 
@@ -61,7 +60,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0
 #define HAVE_TRI_FANS    1
 #define HAVE_QUADS       1
 #define HAVE_QUAD_STRIPS 1
@@ -101,7 +99,7 @@ static GLboolean discrete_prim[0x10] = {
    0,				/* e quad strip */
    0,				/* f polygon */
 };
-   
+
 
 #define LOCAL_VARS r200ContextPtr rmesa = R200_CONTEXT(ctx)
 #define ELT_TYPE  GLushort
@@ -140,7 +138,7 @@ static GLboolean discrete_prim[0x10] = {
 
 #define ALLOC_ELTS(nr)	r200AllocElts( rmesa, nr )
 
-static GLushort *r200AllocElts( r200ContextPtr rmesa, GLuint nr ) 
+static GLushort *r200AllocElts( r200ContextPtr rmesa, GLuint nr )
 {
    if (rmesa->radeon.dma.flush == r200FlushElts &&
        rmesa->tcl.elt_used + nr*2 < R200_ELT_BUF_SZ) {
@@ -176,21 +174,21 @@ while (0)
  * discrete and there are no intervening state changes.  (Somewhat
  * duplicates changes to DrawArrays code)
  */
-static void r200EmitPrim( struct gl_context *ctx, 
-		          GLenum prim, 
-		          GLuint hwprim, 
-		          GLuint start, 
-		          GLuint count)	
+static void r200EmitPrim( struct gl_context *ctx,
+		          GLenum prim,
+		          GLuint hwprim,
+		          GLuint start,
+		          GLuint count)
 {
    r200ContextPtr rmesa = R200_CONTEXT( ctx );
    r200TclPrimitive( ctx, prim, hwprim );
-   
+
    //   fprintf(stderr,"Emit prim %d\n", rmesa->radeon.tcl.aos_count);
 
    r200EmitAOS( rmesa,
 		rmesa->radeon.tcl.aos_count,
 		start );
-   
+
    /* Why couldn't this packet have taken an offset param?
     */
    r200EmitVbufPrim( rmesa,
@@ -240,7 +238,7 @@ static void r200EmitPrim( struct gl_context *ctx,
 /*                          External entrypoints                     */
 /**********************************************************************/
 
-void r200EmitPrimitive( struct gl_context *ctx, 
+void r200EmitPrimitive( struct gl_context *ctx,
 			  GLuint first,
 			  GLuint last,
 			  GLuint flags )
@@ -248,7 +246,7 @@ void r200EmitPrimitive( struct gl_context *ctx,
    tcl_render_tab_verts[flags&PRIM_MODE_MASK]( ctx, first, last, flags );
 }
 
-void r200EmitEltPrimitive( struct gl_context *ctx, 
+void r200EmitEltPrimitive( struct gl_context *ctx,
 			     GLuint first,
 			     GLuint last,
 			     GLuint flags )
@@ -256,7 +254,7 @@ void r200EmitEltPrimitive( struct gl_context *ctx,
    tcl_render_tab_elts[flags&PRIM_MODE_MASK]( ctx, first, last, flags );
 }
 
-void r200TclPrimitive( struct gl_context *ctx, 
+void r200TclPrimitive( struct gl_context *ctx,
 			 GLenum prim,
 			 int hw_prim )
 {
@@ -340,7 +338,7 @@ static GLuint r200EnsureEmitSize( struct gl_context * ctx , GLubyte* vimap_rev )
       "%s space %u, aos %d\n",
       __func__, space_required, AOS_BUFSZ(nr_aos) );
   /* flush the buffer in case we need more than is left. */
-  if (rcommonEnsureCmdBufSpace(&rmesa->radeon, space_required + state_size, __FUNCTION__))
+  if (rcommonEnsureCmdBufSpace(&rmesa->radeon, space_required + state_size, __func__))
     return space_required + radeonCountStateEmitSize( &rmesa->radeon );
   else
     return space_required + state_size;
@@ -362,19 +360,19 @@ static GLboolean r200_run_tcl_render( struct gl_context *ctx,
    struct vertex_buffer *VB = &tnl->vb;
    GLuint i;
    GLubyte *vimap_rev;
-/* use hw fixed order for simplicity, pos 0, weight 1, normal 2, fog 3, 
+/* use hw fixed order for simplicity, pos 0, weight 1, normal 2, fog 3,
    color0 - color3 4-7, texcoord0 - texcoord5 8-13, pos 1 14. Must not use
    more than 12 of those at the same time. */
    GLubyte map_rev_fixed[15] = {255, 255, 255, 255, 255, 255, 255, 255,
 			    255, 255, 255, 255, 255, 255, 255};
 
 
-   /* TODO: separate this from the swtnl pipeline 
+   /* TODO: separate this from the swtnl pipeline
     */
    if (rmesa->radeon.TclFallback)
       return GL_TRUE;	/* fallback to software t&l */
 
-   radeon_print(RADEON_RENDER, RADEON_NORMAL, "%s\n", __FUNCTION__);
+   radeon_print(RADEON_RENDER, RADEON_NORMAL, "%s\n", __func__);
 
    if (VB->Count == 0)
       return GL_FALSE;
@@ -385,7 +383,7 @@ static GLboolean r200_run_tcl_render( struct gl_context *ctx,
       if (!r200ValidateState( ctx ))
          return GL_TRUE; /* fallback to sw t&l */
 
-   if (!ctx->VertexProgram._Enabled) {
+   if (!_mesa_arb_vertex_program_enabled(ctx)) {
    /* NOTE: inputs != tnl->render_inputs - these are the untransformed
     * inputs.
     */
@@ -429,7 +427,7 @@ static GLboolean r200_run_tcl_render( struct gl_context *ctx,
 	 We only need to change compsel. */
       GLuint out_compsel = 0;
       const GLbitfield64 vp_out =
-	 rmesa->curr_vp_hw->mesa_program.Base.OutputsWritten;
+	 rmesa->curr_vp_hw->mesa_program.info.outputs_written;
 
       vimap_rev = &rmesa->curr_vp_hw->inputmap_rev[0];
       assert(vp_out & BITFIELD64_BIT(VARYING_SLOT_POS));
@@ -487,7 +485,7 @@ static GLboolean r200_run_tcl_render( struct gl_context *ctx,
 
 
 
-/* Initial state for tcl stage.  
+/* Initial state for tcl stage.
  */
 const struct tnl_pipeline_stage _r200_tcl_stage =
 {
@@ -521,9 +519,9 @@ static void transition_to_swtnl( struct gl_context *ctx )
    r200ChooseVertexState( ctx );
    r200ChooseRenderState( ctx );
 
-   _tnl_validate_shine_tables( ctx ); 
+   _tnl_validate_shine_tables( ctx );
 
-   tnl->Driver.NotifyMaterialChange = 
+   tnl->Driver.NotifyMaterialChange =
       _tnl_validate_shine_tables;
 
    radeonReleaseArrays( ctx, ~0 );
@@ -546,16 +544,16 @@ static void transition_to_hwtnl( struct gl_context *ctx )
 
    tnl->Driver.NotifyMaterialChange = r200UpdateMaterial;
 
-   if ( rmesa->radeon.dma.flush )			
-      rmesa->radeon.dma.flush( &rmesa->radeon.glCtx );	
+   if ( rmesa->radeon.dma.flush )
+      rmesa->radeon.dma.flush( &rmesa->radeon.glCtx );
 
    rmesa->radeon.dma.flush = NULL;
-   
+
    R200_STATECHANGE( rmesa, vap );
    rmesa->hw.vap.cmd[VAP_SE_VAP_CNTL] |= R200_VAP_TCL_ENABLE;
    rmesa->hw.vap.cmd[VAP_SE_VAP_CNTL] &= ~R200_VAP_FORCE_W_TO_ONE;
 
-   if (ctx->VertexProgram._Enabled) {
+   if (_mesa_arb_vertex_program_enabled(ctx)) {
       rmesa->hw.vap.cmd[VAP_SE_VAP_CNTL] |= R200_VAP_PROG_VTX_SHADER_ENABLE;
    }
 

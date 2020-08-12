@@ -39,16 +39,16 @@
 
 #include "pipe/p_format.h"
 #include "util/u_memory.h"
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 #include "null_sw_winsys.h"
 
 
-static boolean
+static bool
 null_sw_is_displaytarget_format_supported(struct sw_winsys *ws,
                                           unsigned tex_usage,
                                           enum pipe_format format )
 {
-   return FALSE;
+   return false;
 }
 
 
@@ -84,6 +84,7 @@ null_sw_displaytarget_create(struct sw_winsys *winsys,
                              enum pipe_format format,
                              unsigned width, unsigned height,
                              unsigned alignment,
+                             const void *front_private,
                              unsigned *stride)
 {
    fprintf(stderr, "null_sw_displaytarget_create() returning NULL\n");
@@ -101,13 +102,13 @@ null_sw_displaytarget_from_handle(struct sw_winsys *winsys,
 }
 
 
-static boolean
+static bool
 null_sw_displaytarget_get_handle(struct sw_winsys *winsys,
                                  struct sw_displaytarget *dt,
                                  struct winsys_handle *whandle)
 {
    assert(0);
-   return FALSE;
+   return false;
 }
 
 

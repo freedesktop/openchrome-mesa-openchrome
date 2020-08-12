@@ -87,7 +87,7 @@ llvmpipe_set_blend_color(struct pipe_context *pipe,
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
-   if(!blend_color)
+   if (!blend_color)
       return;
 
    if(memcmp(&llvmpipe->blend_color, blend_color, sizeof *blend_color) == 0)
@@ -159,7 +159,7 @@ llvmpipe_set_stencil_ref(struct pipe_context *pipe,
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
-   if(!stencil_ref)
+   if (!stencil_ref)
       return;
 
    if(memcmp(&llvmpipe->stencil_ref, stencil_ref, sizeof *stencil_ref) == 0)
@@ -182,7 +182,20 @@ llvmpipe_set_sample_mask(struct pipe_context *pipe,
    if (sample_mask != llvmpipe->sample_mask) {
       llvmpipe->sample_mask = sample_mask;
 
-      llvmpipe->dirty |= LP_NEW_RASTERIZER;
+      llvmpipe->dirty |= LP_NEW_SAMPLE_MASK;
+   }
+}
+
+static void
+llvmpipe_set_min_samples(struct pipe_context *pipe,
+                         unsigned min_samples)
+{
+   struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
+
+   if (min_samples != llvmpipe->min_samples) {
+      llvmpipe->min_samples = min_samples;
+
+      llvmpipe->dirty |= LP_NEW_FS;
    }
 }
 
@@ -201,6 +214,8 @@ llvmpipe_init_blend_funcs(struct llvmpipe_context *llvmpipe)
 
    llvmpipe->pipe.set_stencil_ref = llvmpipe_set_stencil_ref;
    llvmpipe->pipe.set_sample_mask = llvmpipe_set_sample_mask;
+   llvmpipe->pipe.set_min_samples = llvmpipe_set_min_samples;
 
+   llvmpipe->dirty |= LP_NEW_SAMPLE_MASK;
    llvmpipe->sample_mask = ~0;
 }

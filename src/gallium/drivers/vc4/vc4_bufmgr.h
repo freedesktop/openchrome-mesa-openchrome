@@ -25,6 +25,7 @@
 #define VC4_BUFMGR_H
 
 #include <stdint.h>
+#include "util/u_hash_table.h"
 #include "util/u_inlines.h"
 #include "vc4_qir.h"
 
@@ -38,15 +39,18 @@ struct vc4_bo {
         uint32_t handle;
         uint32_t size;
 
-#ifdef USE_VC4_SIMULATOR
-        void *simulator_winsys_map;
-        uint32_t simulator_winsys_stride;
-#endif
+        /* This will be read/written by multiple threads without a lock -- you
+         * should take a snapshot and use it to see if you happen to be in the
+         * CL's handles at this position, to make most lookups O(1).  It's
+         * volatile to make sure that the compiler doesn't emit multiple loads
+         * from the address, which would make the lookup racy.
+         */
+        volatile uint32_t last_hindex;
 
         /** Entry in the linked list of buffers freed, by age. */
-        struct simple_node time_list;
+        struct list_head time_list;
         /** Entry in the per-page-count linked list of buffers freed (by age). */
-        struct simple_node size_list;
+        struct list_head size_list;
         /** Approximate second when the bo was freed. */
         time_t free_time;
         /**
@@ -58,40 +62,54 @@ struct vc4_bo {
 
 struct vc4_bo *vc4_bo_alloc(struct vc4_screen *screen, uint32_t size,
                             const char *name);
-struct vc4_bo *vc4_bo_alloc_mem(struct vc4_screen *screen, const void *data,
-                                uint32_t size, const char *name);
+struct vc4_bo *vc4_bo_alloc_shader(struct vc4_screen *screen, const void *data,
+                                   uint32_t size);
 void vc4_bo_last_unreference(struct vc4_bo *bo);
 void vc4_bo_last_unreference_locked_timed(struct vc4_bo *bo, time_t time);
-struct vc4_bo *vc4_bo_open_name(struct vc4_screen *screen, uint32_t name,
-                                uint32_t winsys_stride);
-struct vc4_bo *vc4_bo_open_dmabuf(struct vc4_screen *screen, int fd,
-                                  uint32_t winsys_stride);
+struct vc4_bo *vc4_bo_open_name(struct vc4_screen *screen, uint32_t name);
+struct vc4_bo *vc4_bo_open_dmabuf(struct vc4_screen *screen, int fd);
 bool vc4_bo_flink(struct vc4_bo *bo, uint32_t *name);
 int vc4_bo_get_dmabuf(struct vc4_bo *bo);
 
-static inline void
-vc4_bo_set_reference(struct vc4_bo **old_bo, struct vc4_bo *new_bo)
-{
-        if (pipe_reference(&(*old_bo)->reference, &new_bo->reference))
-                vc4_bo_last_unreference(*old_bo);
-        *old_bo = new_bo;
-}
-
+void vc4_bo_debug_describe(char* buf, const struct vc4_bo *ptr);
 static inline struct vc4_bo *
 vc4_bo_reference(struct vc4_bo *bo)
 {
-        pipe_reference(NULL, &bo->reference);
+        pipe_reference_described(NULL, &bo->reference,
+                                 (debug_reference_descriptor)
+                                 vc4_bo_debug_describe);
         return bo;
 }
 
 static inline void
 vc4_bo_unreference(struct vc4_bo **bo)
 {
+        struct vc4_screen *screen;
         if (!*bo)
                 return;
 
-        if (pipe_reference(&(*bo)->reference, NULL))
-                vc4_bo_last_unreference(*bo);
+        if ((*bo)->private) {
+                /* Avoid the mutex for private BOs */
+                if (pipe_reference_described(&(*bo)->reference, NULL,
+                                             (debug_reference_descriptor)
+                                             vc4_bo_debug_describe)) {
+                        vc4_bo_last_unreference(*bo);
+                }
+        } else {
+                screen = (*bo)->screen;
+                mtx_lock(&screen->bo_handles_mutex);
+
+                if (pipe_reference_described(&(*bo)->reference, NULL,
+                                             (debug_reference_descriptor)
+                                             vc4_bo_debug_describe)) {
+                        _mesa_hash_table_remove_key(screen->bo_handles,
+                                               (void *)(uintptr_t)(*bo)->handle);
+                        vc4_bo_last_unreference(*bo);
+                }
+
+                mtx_unlock(&screen->bo_handles_mutex);
+        }
+
         *bo = NULL;
 }
 
@@ -101,8 +119,11 @@ vc4_bo_unreference_locked_timed(struct vc4_bo **bo, time_t time)
         if (!*bo)
                 return;
 
-        if (pipe_reference(&(*bo)->reference, NULL))
+        if (pipe_reference_described(&(*bo)->reference, NULL,
+                                     (debug_reference_descriptor)
+                                     vc4_bo_debug_describe)) {
                 vc4_bo_last_unreference_locked_timed(*bo, time);
+        }
         *bo = NULL;
 }
 
@@ -113,10 +134,14 @@ void *
 vc4_bo_map_unsynchronized(struct vc4_bo *bo);
 
 bool
-vc4_bo_wait(struct vc4_bo *bo, uint64_t timeout_ns);
+vc4_bo_wait(struct vc4_bo *bo, uint64_t timeout_ns, const char *reason);
 
 bool
-vc4_wait_seqno(struct vc4_screen *screen, uint64_t seqno, uint64_t timeout_ns);
+vc4_wait_seqno(struct vc4_screen *screen, uint64_t seqno, uint64_t timeout_ns,
+               const char *reason);
+
+void
+vc4_bo_label(struct vc4_screen *screen, struct vc4_bo *bo, const char *fmt, ...);
 
 void
 vc4_bufmgr_destroy(struct pipe_screen *pscreen);

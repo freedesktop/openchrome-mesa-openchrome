@@ -21,10 +21,13 @@
  * SOFTWARE.
  */
 
-int is_nouveau_vieux(int fd);
+#include <stdbool.h>
 
-#ifndef __NOT_HAVE_DRM_H
+bool is_nouveau_vieux(int fd);
 
+#ifdef HAVE_LIBDRM
+
+#include <stdlib.h>
 #include <xf86drm.h>
 #include <nouveau_drm.h>
 
@@ -41,15 +44,16 @@ nouveau_chipset(int fd)
    return gp.value;
 }
 
-int
+bool
 is_nouveau_vieux(int fd)
 {
    int chipset = nouveau_chipset(fd);
-   return chipset > 0 && chipset < 0x30;
+   return (chipset > 0 && chipset < 0x30) ||
+      (chipset < 0x40 && getenv("NOUVEAU_VIEUX") != NULL);
 }
 
 #else
 
-int is_nouveau_vieux(int fd) { return 0; }
+bool is_nouveau_vieux(int fd) { return false; }
 
 #endif

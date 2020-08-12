@@ -12,14 +12,10 @@
 #include <stddef.h>
 #include <kernel/image.h>
 
-extern "C" {
-//#include "state_tracker/st_api.h"
 #include "pipe/p_compiler.h"
 #include "pipe/p_screen.h"
 #include "postprocess/filters.h"
-#include "os/os_thread.h"
 #include "hgl_context.h"
-}
 
 #include "bitmap_wrapper.h"
 
@@ -54,8 +50,8 @@ private:
 		// Context Management
 		struct hgl_context*	fContext[CONTEXT_MAX];
 		context_id			fCurrentContext;
-		pipe_mutex			fMutex;
+		mtx_t			fMutex;
 };
-	
+
 
 #endif /* GALLIUMCONTEXT_H */

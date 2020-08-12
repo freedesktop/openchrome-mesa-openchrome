@@ -1,9 +1,7 @@
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 #include "nvc0/nvc0_context.h"
-
-#include "nv50/nv50_defs.xml.h"
 
 struct nvc0_transfer {
    struct pipe_transfer base;
@@ -114,13 +112,27 @@ nve4_m2mf_transfer_rect(struct nvc0_context *nvc0,
                         const struct nv50_m2mf_rect *src,
                         uint32_t nblocksx, uint32_t nblocksy)
 {
+   static const struct {
+      int cs;
+      int nc;
+   } cpbs[] = {
+      [ 1] = { 1, 1 },
+      [ 2] = { 1, 2 },
+      [ 3] = { 1, 3 },
+      [ 4] = { 1, 4 },
+      [ 6] = { 2, 3 },
+      [ 8] = { 2, 4 },
+      [ 9] = { 3, 3 },
+      [12] = { 3, 4 },
+      [16] = { 4, 4 },
+   };
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nouveau_bufctx *bctx = nvc0->bufctx;
    uint32_t exec;
    uint32_t src_base = src->base;
    uint32_t dst_base = dst->base;
-   const int cpp = dst->cpp;
 
+   assert(dst->cpp < ARRAY_SIZE(cpbs) && cpbs[dst->cpp].cs);
    assert(dst->cpp == src->cpp);
 
    nouveau_bufctx_refn(bctx, 0, dst->bo, dst->domain | NOUVEAU_BO_WR);
@@ -128,46 +140,56 @@ nve4_m2mf_transfer_rect(struct nvc0_context *nvc0,
    nouveau_pushbuf_bufctx(push, bctx);
    nouveau_pushbuf_validate(push);
 
-   exec = 0x200 /* 2D_ENABLE */ | 0x6 /* UNK */;
+   exec = NVE4_COPY_EXEC_SWIZZLE_ENABLE | NVE4_COPY_EXEC_2D_ENABLE | NVE4_COPY_EXEC_FLUSH | NVE4_COPY_EXEC_COPY_MODE_NON_PIPELINED;
 
-   if (!nouveau_bo_memtype(dst->bo)) {
+   BEGIN_NVC0(push, NVE4_COPY(SWIZZLE), 1);
+   PUSH_DATA (push, (cpbs[dst->cpp].nc - 1) << 24 |
+                    (cpbs[src->cpp].nc - 1) << 20 |
+                    (cpbs[src->cpp].cs - 1) << 16 |
+                    3 << 12 /* DST_W = SRC_W */ |
+                    2 <<  8 /* DST_Z = SRC_Z */ |
+                    1 <<  4 /* DST_Y = SRC_Y */ |
+                    0 <<  0 /* DST_X = SRC_X */);
+
+   if (nouveau_bo_memtype(dst->bo)) {
+      BEGIN_NVC0(push, NVE4_COPY(DST_BLOCK_DIMENSIONS), 6);
+      PUSH_DATA (push, dst->tile_mode | NVE4_COPY_SRC_BLOCK_DIMENSIONS_GOB_HEIGHT_FERMI_8);
+      PUSH_DATA (push, dst->width);
+      PUSH_DATA (push, dst->height);
+      PUSH_DATA (push, dst->depth);
+      PUSH_DATA (push, dst->z);
+      PUSH_DATA (push, (dst->y << 16) | dst->x);
+   } else {
       assert(!dst->z);
-      dst_base += dst->y * dst->pitch + dst->x * cpp;
-      exec |= 0x100; /* DST_MODE_2D_LINEAR */
+      dst_base += dst->y * dst->pitch + dst->x * dst->cpp;
+      exec |= NVE4_COPY_EXEC_DST_LAYOUT_BLOCKLINEAR;
    }
-   if (!nouveau_bo_memtype(src->bo)) {
+
+   if (nouveau_bo_memtype(src->bo)) {
+      BEGIN_NVC0(push, NVE4_COPY(SRC_BLOCK_DIMENSIONS), 6);
+      PUSH_DATA (push, src->tile_mode | NVE4_COPY_SRC_BLOCK_DIMENSIONS_GOB_HEIGHT_FERMI_8);
+      PUSH_DATA (push, src->width);
+      PUSH_DATA (push, src->height);
+      PUSH_DATA (push, src->depth);
+      PUSH_DATA (push, src->z);
+      PUSH_DATA (push, (src->y << 16) | src->x);
+   } else {
       assert(!src->z);
-      src_base += src->y * src->pitch + src->x * cpp;
-      exec |= 0x080; /* SRC_MODE_2D_LINEAR */
+      src_base += src->y * src->pitch + src->x * src->cpp;
+      exec |= NVE4_COPY_EXEC_SRC_LAYOUT_BLOCKLINEAR;
    }
 
-   BEGIN_NVC0(push, SUBC_COPY(0x070c), 6);
-   PUSH_DATA (push, 0x1000 | dst->tile_mode);
-   PUSH_DATA (push, dst->pitch);
-   PUSH_DATA (push, dst->height);
-   PUSH_DATA (push, dst->depth);
-   PUSH_DATA (push, dst->z);
-   PUSH_DATA (push, (dst->y << 16) | (dst->x * cpp));
-
-   BEGIN_NVC0(push, SUBC_COPY(0x0728), 6);
-   PUSH_DATA (push, 0x1000 | src->tile_mode);
-   PUSH_DATA (push, src->pitch);
-   PUSH_DATA (push, src->height);
-   PUSH_DATA (push, src->depth);
-   PUSH_DATA (push, src->z);
-   PUSH_DATA (push, (src->y << 16) | (src->x * cpp));
-
-   BEGIN_NVC0(push, SUBC_COPY(0x0400), 8);
+   BEGIN_NVC0(push, NVE4_COPY(SRC_ADDRESS_HIGH), 8);
    PUSH_DATAh(push, src->bo->offset + src_base);
    PUSH_DATA (push, src->bo->offset + src_base);
    PUSH_DATAh(push, dst->bo->offset + dst_base);
    PUSH_DATA (push, dst->bo->offset + dst_base);
    PUSH_DATA (push, src->pitch);
    PUSH_DATA (push, dst->pitch);
-   PUSH_DATA (push, nblocksx * cpp);
+   PUSH_DATA (push, nblocksx);
    PUSH_DATA (push, nblocksy);
 
-   BEGIN_NVC0(push, SUBC_COPY(0x0300), 1);
+   BEGIN_NVC0(push, NVE4_COPY(EXEC), 1);
    PUSH_DATA (push, exec);
 
    nouveau_bufctx_reset(bctx, 0);
@@ -188,14 +210,10 @@ nvc0_m2mf_push_linear(struct nouveau_context *nv,
    nouveau_pushbuf_validate(push);
 
    while (count) {
-      unsigned nr;
+      unsigned nr = MIN2(count, NV04_PFIFO_MAX_PACKET_LEN);
 
-      if (!PUSH_SPACE(push, 16))
+      if (!PUSH_SPACE(push, nr + 9))
          break;
-      nr = PUSH_AVAIL(push);
-      assert(nr >= 16);
-      nr = MIN2(count, nr - 9);
-      nr = MIN2(nr, NV04_PFIFO_MAX_PACKET_LEN);
 
       BEGIN_NVC0(push, NVC0_M2MF(OFFSET_OUT_HIGH), 2);
       PUSH_DATAh(push, dst->offset + offset);
@@ -234,14 +252,10 @@ nve4_p2mf_push_linear(struct nouveau_context *nv,
    nouveau_pushbuf_validate(push);
 
    while (count) {
-      unsigned nr;
+      unsigned nr = MIN2(count, (NV04_PFIFO_MAX_PACKET_LEN - 1));
 
-      if (!PUSH_SPACE(push, 16))
+      if (!PUSH_SPACE(push, nr + 10))
          break;
-      nr = PUSH_AVAIL(push);
-      assert(nr >= 16);
-      nr = MIN2(count, nr - 8);
-      nr = MIN2(nr, (NV04_PFIFO_MAX_PACKET_LEN - 1));
 
       BEGIN_NVC0(push, NVE4_P2MF(UPLOAD_DST_ADDRESS_HIGH), 2);
       PUSH_DATAh(push, dst->offset + offset);
@@ -315,31 +329,34 @@ nve4_m2mf_copy_linear(struct nouveau_context *nv,
    nouveau_pushbuf_bufctx(push, bctx);
    nouveau_pushbuf_validate(push);
 
-   BEGIN_NVC0(push, SUBC_COPY(0x0400), 4);
+   BEGIN_NVC0(push, NVE4_COPY(SRC_ADDRESS_HIGH), 4);
    PUSH_DATAh(push, src->offset + srcoff);
    PUSH_DATA (push, src->offset + srcoff);
    PUSH_DATAh(push, dst->offset + dstoff);
    PUSH_DATA (push, dst->offset + dstoff);
-   BEGIN_NVC0(push, SUBC_COPY(0x0418), 1);
+   BEGIN_NVC0(push, NVE4_COPY(X_COUNT), 1);
    PUSH_DATA (push, size);
-   BEGIN_NVC0(push, SUBC_COPY(0x0300), 1);
-   PUSH_DATA (push, 0x186);
+   BEGIN_NVC0(push, NVE4_COPY(EXEC), 1);
+   PUSH_DATA (push, NVE4_COPY_EXEC_COPY_MODE_NON_PIPELINED |
+		    NVE4_COPY_EXEC_FLUSH |
+		    NVE4_COPY_EXEC_SRC_LAYOUT_BLOCKLINEAR |
+		    NVE4_COPY_EXEC_DST_LAYOUT_BLOCKLINEAR);
 
    nouveau_bufctx_reset(bctx, 0);
 }
 
 
-static INLINE boolean
+static inline bool
 nvc0_mt_transfer_can_map_directly(struct nv50_miptree *mt)
 {
    if (mt->base.domain == NOUVEAU_BO_VRAM)
-      return FALSE;
+      return false;
    if (mt->base.base.usage != PIPE_USAGE_STAGING)
-      return FALSE;
+      return false;
    return !nouveau_bo_memtype(mt->base.bo);
 }
 
-static INLINE boolean
+static inline bool
 nvc0_mt_sync(struct nvc0_context *nvc0, struct nv50_miptree *mt, unsigned usage)
 {
    if (!mt->base.mm) {
@@ -348,8 +365,8 @@ nvc0_mt_sync(struct nvc0_context *nvc0, struct nv50_miptree *mt, unsigned usage)
       return !nouveau_bo_wait(mt->base.bo, access, nvc0->base.client);
    }
    if (usage & PIPE_TRANSFER_WRITE)
-      return !mt->base.fence || nouveau_fence_wait(mt->base.fence);
-   return !mt->base.fence_wr || nouveau_fence_wait(mt->base.fence_wr);
+      return !mt->base.fence || nouveau_fence_wait(mt->base.fence, &nvc0->base.debug);
+   return !mt->base.fence_wr || nouveau_fence_wait(mt->base.fence_wr, &nvc0->base.debug);
 }
 
 void *
@@ -400,14 +417,21 @@ nvc0_miptree_transfer_map(struct pipe_context *pctx,
    }
    tx->nlayers = box->depth;
 
+   if (usage & PIPE_TRANSFER_MAP_DIRECTLY) {
+      tx->base.stride = mt->level[level].pitch;
+      tx->base.layer_stride = mt->layer_stride;
+      uint32_t offset = box->y * tx->base.stride +
+         util_format_get_stride(res->format, box->x);
+      if (!mt->layout_3d)
+         offset += mt->layer_stride * box->z;
+      else
+         offset += nvc0_mt_zslice_offset(mt, level, box->z);
+      *ptransfer = &tx->base;
+      return mt->base.bo->map + mt->base.offset + offset;
+   }
+
    tx->base.stride = tx->nblocksx * util_format_get_blocksize(res->format);
    tx->base.layer_stride = tx->nblocksy * tx->base.stride;
-
-   if (usage & PIPE_TRANSFER_MAP_DIRECTLY) {
-      tx->base.stride = align(tx->base.stride, 128);
-      *ptransfer = &tx->base;
-      return mt->base.bo->map + mt->base.offset;
-   }
 
    nv50_m2mf_rect_setup(&tx->rect[0], res, level, box->x, box->y, box->z);
 
@@ -495,22 +519,64 @@ nvc0_miptree_transfer_unmap(struct pipe_context *pctx,
          tx->rect[1].base += tx->nblocksy * tx->base.stride;
       }
       NOUVEAU_DRV_STAT(&nvc0->screen->base, tex_transfers_wr, 1);
+
+      /* Allow the copies above to finish executing before freeing the source */
+      nouveau_fence_work(nvc0->screen->base.fence.current,
+                         nouveau_fence_unref_bo, tx->rect[1].bo);
+   } else {
+      nouveau_bo_ref(NULL, &tx->rect[1].bo);
    }
    if (tx->base.usage & PIPE_TRANSFER_READ)
       NOUVEAU_DRV_STAT(&nvc0->screen->base, tex_transfers_rd, 1);
 
-   nouveau_bo_ref(NULL, &tx->rect[1].bo);
    pipe_resource_reference(&transfer->resource, NULL);
 
    FREE(tx);
 }
 
 /* This happens rather often with DTD9/st. */
-void
+static void
 nvc0_cb_push(struct nouveau_context *nv,
-             struct nouveau_bo *bo, unsigned domain,
-             unsigned base, unsigned size,
+             struct nv04_resource *res,
              unsigned offset, unsigned words, const uint32_t *data)
+{
+   struct nvc0_context *nvc0 = nvc0_context(&nv->pipe);
+   struct nvc0_constbuf *cb = NULL;
+   int s;
+
+   /* Go through all the constbuf binding points of this buffer and try to
+    * find one which contains the region to be updated.
+    */
+   for (s = 0; s < 6 && !cb; s++) {
+      uint16_t bindings = res->cb_bindings[s];
+      while (bindings) {
+         int i = ffs(bindings) - 1;
+         uint32_t cb_offset = nvc0->constbuf[s][i].offset;
+
+         bindings &= ~(1 << i);
+         if (cb_offset <= offset &&
+             cb_offset + nvc0->constbuf[s][i].size >= offset + words * 4) {
+            cb = &nvc0->constbuf[s][i];
+            break;
+         }
+      }
+   }
+
+   if (cb) {
+      nvc0_cb_bo_push(nv, res->bo, res->domain,
+                      res->offset + cb->offset, cb->size,
+                      offset - cb->offset, words, data);
+   } else {
+      nv->push_data(nv, res->bo, res->offset + offset, res->domain,
+                    words * 4, data);
+   }
+}
+
+void
+nvc0_cb_bo_push(struct nouveau_context *nv,
+                struct nouveau_bo *bo, unsigned domain,
+                unsigned base, unsigned size,
+                unsigned offset, unsigned words, const uint32_t *data)
 {
    struct nouveau_pushbuf *push = nv->pushbuf;
 
@@ -520,15 +586,16 @@ nvc0_cb_push(struct nouveau_context *nv,
    assert(!(offset & 3));
    size = align(size, 0x100);
 
+   assert(offset < size);
+   assert(offset + words * 4 <= size);
+
    BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
    PUSH_DATA (push, size);
    PUSH_DATAh(push, bo->offset + base);
    PUSH_DATA (push, bo->offset + base);
 
    while (words) {
-      unsigned nr = PUSH_AVAIL(push);
-      nr = MIN2(nr, words);
-      nr = MIN2(nr, NV04_PFIFO_MAX_PACKET_LEN - 1);
+      unsigned nr = MIN2(words, NV04_PFIFO_MAX_PACKET_LEN - 1);
 
       PUSH_SPACE(push, nr + 2);
       PUSH_REFN (push, bo, NOUVEAU_BO_WR | domain);

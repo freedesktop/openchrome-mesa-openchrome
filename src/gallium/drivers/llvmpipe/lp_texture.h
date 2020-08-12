@@ -90,6 +90,7 @@ struct llvmpipe_resource
 
    unsigned id;  /**< temporary, for debugging */
 
+   unsigned sample_stride;
 #ifdef DEBUG
    /** for linked list */
    struct llvmpipe_resource *prev, *next;
@@ -106,21 +107,21 @@ struct llvmpipe_transfer
 
 
 /** cast wrappers */
-static INLINE struct llvmpipe_resource *
+static inline struct llvmpipe_resource *
 llvmpipe_resource(struct pipe_resource *pt)
 {
    return (struct llvmpipe_resource *) pt;
 }
 
 
-static INLINE const struct llvmpipe_resource *
+static inline const struct llvmpipe_resource *
 llvmpipe_resource_const(const struct pipe_resource *pt)
 {
    return (const struct llvmpipe_resource *) pt;
 }
 
 
-static INLINE struct llvmpipe_transfer *
+static inline struct llvmpipe_transfer *
 llvmpipe_transfer(struct pipe_transfer *pt)
 {
    return (struct llvmpipe_transfer *) pt;
@@ -131,7 +132,7 @@ void llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen);
 void llvmpipe_init_context_resource_funcs(struct pipe_context *pipe);
 
 
-static INLINE boolean
+static inline boolean
 llvmpipe_resource_is_texture(const struct pipe_resource *resource)
 {
    switch (resource->target) {
@@ -153,7 +154,7 @@ llvmpipe_resource_is_texture(const struct pipe_resource *resource)
 }
 
 
-static INLINE boolean
+static inline boolean
 llvmpipe_resource_is_1d(const struct pipe_resource *resource)
 {
    switch (resource->target) {
@@ -175,7 +176,7 @@ llvmpipe_resource_is_1d(const struct pipe_resource *resource)
 }
 
 
-static INLINE unsigned
+static inline unsigned
 llvmpipe_layer_stride(struct pipe_resource *resource,
                       unsigned level)
 {
@@ -185,7 +186,7 @@ llvmpipe_layer_stride(struct pipe_resource *resource,
 }
 
 
-static INLINE unsigned
+static inline unsigned
 llvmpipe_resource_stride(struct pipe_resource *resource,
                          unsigned level)
 {
@@ -194,6 +195,12 @@ llvmpipe_resource_stride(struct pipe_resource *resource,
    return lpr->row_stride[level];
 }
 
+static inline unsigned
+llvmpipe_sample_stride(struct pipe_resource *resource)
+{
+   struct llvmpipe_resource *lpr = llvmpipe_resource(resource);
+   return lpr->sample_stride;
+}
 
 void *
 llvmpipe_resource_map(struct pipe_resource *resource,
@@ -236,4 +243,12 @@ llvmpipe_is_resource_referenced( struct pipe_context *pipe,
 unsigned
 llvmpipe_get_format_alignment(enum pipe_format format);
 
+void *
+llvmpipe_transfer_map_ms( struct pipe_context *pipe,
+			  struct pipe_resource *resource,
+			  unsigned level,
+			  unsigned usage,
+			  unsigned sample,
+			  const struct pipe_box *box,
+			  struct pipe_transfer **transfer );
 #endif /* LP_TEXTURE_H */

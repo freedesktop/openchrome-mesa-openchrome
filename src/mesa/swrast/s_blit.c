@@ -52,8 +52,8 @@ NAME(GLint srcWidth, GLint dstWidth,			\
    if (flip) {						\
       for (dstCol = 0; dstCol < dstWidth; dstCol++) {	\
          GLint srcCol = (dstCol * srcWidth) / dstWidth;	\
-         ASSERT(srcCol >= 0);				\
-         ASSERT(srcCol < srcWidth);			\
+         assert(srcCol >= 0);				\
+         assert(srcCol < srcWidth);			\
          srcCol = srcWidth - 1 - srcCol; /* flip */	\
          if (SIZE == 1) {				\
             dst[dstCol] = src[srcCol];			\
@@ -73,8 +73,8 @@ NAME(GLint srcWidth, GLint dstWidth,			\
    else {						\
       for (dstCol = 0; dstCol < dstWidth; dstCol++) {	\
          GLint srcCol = (dstCol * srcWidth) / dstWidth;	\
-         ASSERT(srcCol >= 0);				\
-         ASSERT(srcCol < srcWidth);			\
+         assert(srcCol >= 0);				\
+         assert(srcCol < srcWidth);			\
          if (SIZE == 1) {				\
             dst[dstCol] = src[srcCol];			\
          }						\
@@ -107,14 +107,14 @@ RESAMPLE(resample_row_16, GLuint, 4)
  */
 static void
 blit_nearest(struct gl_context *ctx,
+             struct gl_framebuffer *readFb,
+             struct gl_framebuffer *drawFb,
              GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
              GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
              GLbitfield buffer)
 {
    struct gl_renderbuffer *readRb, *drawRb = NULL;
    struct gl_renderbuffer_attachment *readAtt = NULL, *drawAtt = NULL;
-   struct gl_framebuffer *readFb = ctx->ReadBuffer;
-   struct gl_framebuffer *drawFb = ctx->DrawBuffer;
    GLuint numDrawBuffers = 0;
    GLuint i;
 
@@ -198,8 +198,8 @@ blit_nearest(struct gl_context *ctx,
    /* Blit to all the draw buffers */
    for (i = 0; i < numDrawBuffers; i++) {
       if (buffer == GL_COLOR_BUFFER_BIT) {
-         int idx = drawFb->_ColorDrawBufferIndexes[i];
-         if (idx == -1)
+         gl_buffer_index idx = drawFb->_ColorDrawBufferIndexes[i];
+         if (idx == BUFFER_NONE)
             continue;
          drawAtt = &drawFb->Attachment[idx];
          drawRb = drawAtt->Renderbuffer;
@@ -253,7 +253,7 @@ blit_nearest(struct gl_context *ctx,
          ctx->Driver.MapRenderbuffer(ctx, readRb, 0, 0,
                                      readRb->Width, readRb->Height,
                                      GL_MAP_READ_BIT | GL_MAP_WRITE_BIT,
-                                     &map, &rowStride);
+                                     &map, &rowStride, readFb->FlipY);
          if (!map) {
             goto fail_no_memory;
          }
@@ -280,14 +280,16 @@ blit_nearest(struct gl_context *ctx,
          ctx->Driver.MapRenderbuffer(ctx, readRb,
                                      srcXpos, srcYpos,
                                      srcWidth, srcHeight,
-                                     GL_MAP_READ_BIT, &srcMap, &srcRowStride);
+                                     GL_MAP_READ_BIT, &srcMap, &srcRowStride,
+                                     readFb->FlipY);
          if (!srcMap) {
             goto fail_no_memory;
          }
          ctx->Driver.MapRenderbuffer(ctx, drawRb,
                                      dstXpos, dstYpos,
                                      dstWidth, dstHeight,
-                                     GL_MAP_WRITE_BIT, &dstMap, &dstRowStride);
+                                     GL_MAP_WRITE_BIT, &dstMap, &dstRowStride,
+                                     drawFb->FlipY);
          if (!dstMap) {
             ctx->Driver.UnmapRenderbuffer(ctx, readRb);
             goto fail_no_memory;
@@ -296,11 +298,11 @@ blit_nearest(struct gl_context *ctx,
 
       for (dstRow = 0; dstRow < dstHeight; dstRow++) {
          GLfloat srcRowF = (dstRow + 0.5F) / dstHeight * srcHeight - 0.5F;
-         GLint srcRow = IROUND(srcRowF);
+         GLint srcRow = lroundf(srcRowF);
          GLubyte *dstRowStart = dstMap + dstRowStride * dstRow;
 
-         ASSERT(srcRow >= 0);
-         ASSERT(srcRow < srcHeight);
+         assert(srcRow >= 0);
+         assert(srcRow < srcHeight);
 
          if (invertY) {
             srcRow = srcHeight - 1 - srcRow;
@@ -332,7 +334,7 @@ blit_nearest(struct gl_context *ctx,
                break;
             }
 
-            (*resampleRow)(srcWidth, dstWidth, srcBuffer, dstBuffer, invertX);
+            resampleRow(srcWidth, dstWidth, srcBuffer, dstBuffer, invertX);
             prevY = srcRow;
          }
 
@@ -407,13 +409,13 @@ resample_linear_row_ub(GLint srcWidth, GLint dstWidth,
 
    for (dstCol = 0; dstCol < dstWidth; dstCol++) {
       const GLfloat srcCol = (dstCol + 0.5F) / dstWidth * srcWidth - 0.5F;
-      GLint srcCol0 = MAX2(0, IFLOOR(srcCol));
+      GLint srcCol0 = MAX2(0, util_ifloor(srcCol));
       GLint srcCol1 = srcCol0 + 1;
       GLfloat colWeight = srcCol - srcCol0; /* fractional part of srcCol */
       GLfloat red, green, blue, alpha;
 
-      ASSERT(srcCol0 < srcWidth);
-      ASSERT(srcCol1 <= srcWidth);
+      assert(srcCol0 < srcWidth);
+      assert(srcCol1 <= srcWidth);
 
       if (srcCol1 == srcWidth) {
          /* last column fudge */
@@ -438,11 +440,11 @@ resample_linear_row_ub(GLint srcWidth, GLint dstWidth,
       alpha = lerp_2d(colWeight, rowWeight,
                     srcColor0[srcCol0][ACOMP], srcColor0[srcCol1][ACOMP],
                     srcColor1[srcCol0][ACOMP], srcColor1[srcCol1][ACOMP]);
-      
-      dstColor[dstCol][RCOMP] = IFLOOR(red);
-      dstColor[dstCol][GCOMP] = IFLOOR(green);
-      dstColor[dstCol][BCOMP] = IFLOOR(blue);
-      dstColor[dstCol][ACOMP] = IFLOOR(alpha);
+
+      dstColor[dstCol][RCOMP] = util_ifloor(red);
+      dstColor[dstCol][GCOMP] = util_ifloor(green);
+      dstColor[dstCol][BCOMP] = util_ifloor(blue);
+      dstColor[dstCol][ACOMP] = util_ifloor(alpha);
    }
 }
 
@@ -462,13 +464,13 @@ resample_linear_row_float(GLint srcWidth, GLint dstWidth,
 
    for (dstCol = 0; dstCol < dstWidth; dstCol++) {
       const GLfloat srcCol = (dstCol + 0.5F) / dstWidth * srcWidth - 0.5F;
-      GLint srcCol0 = MAX2(0, IFLOOR(srcCol));
+      GLint srcCol0 = MAX2(0, util_ifloor(srcCol));
       GLint srcCol1 = srcCol0 + 1;
       GLfloat colWeight = srcCol - srcCol0; /* fractional part of srcCol */
       GLfloat red, green, blue, alpha;
 
-      ASSERT(srcCol0 < srcWidth);
-      ASSERT(srcCol1 <= srcWidth);
+      assert(srcCol0 < srcWidth);
+      assert(srcCol1 <= srcWidth);
 
       if (srcCol1 == srcWidth) {
          /* last column fudge */
@@ -493,7 +495,7 @@ resample_linear_row_float(GLint srcWidth, GLint dstWidth,
       alpha = lerp_2d(colWeight, rowWeight,
                     srcColor0[srcCol0][ACOMP], srcColor0[srcCol1][ACOMP],
                     srcColor1[srcCol0][ACOMP], srcColor1[srcCol1][ACOMP]);
-      
+
       dstColor[dstCol][RCOMP] = red;
       dstColor[dstCol][GCOMP] = green;
       dstColor[dstCol][BCOMP] = blue;
@@ -508,11 +510,11 @@ resample_linear_row_float(GLint srcWidth, GLint dstWidth,
  */
 static void
 blit_linear(struct gl_context *ctx,
+            struct gl_framebuffer *readFb,
+            struct gl_framebuffer *drawFb,
             GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
             GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
 {
-   struct gl_framebuffer *drawFb = ctx->DrawBuffer;
-   struct gl_framebuffer *readFb = ctx->ReadBuffer;
    struct gl_renderbuffer *readRb = readFb->_ColorReadBuffer;
    struct gl_renderbuffer_attachment *readAtt =
       &readFb->Attachment[readFb->_ColorReadBufferIndex];
@@ -569,12 +571,12 @@ blit_linear(struct gl_context *ctx,
    }
 
    for (i = 0; i < drawFb->_NumColorDrawBuffers; i++) {
-      GLint idx = drawFb->_ColorDrawBufferIndexes[i];
+      gl_buffer_index idx = drawFb->_ColorDrawBufferIndexes[i];
       struct gl_renderbuffer_attachment *drawAtt;
       struct gl_renderbuffer *drawRb;
       mesa_format drawFormat;
 
-      if (idx == -1)
+      if (idx == BUFFER_NONE)
          continue;
 
       drawAtt = &drawFb->Attachment[idx];
@@ -594,7 +596,8 @@ blit_linear(struct gl_context *ctx,
          ctx->Driver.MapRenderbuffer(ctx, readRb,
                                      0, 0, readRb->Width, readRb->Height,
                                      GL_MAP_READ_BIT | GL_MAP_WRITE_BIT,
-                                     &srcMap, &srcRowStride);
+                                     &srcMap, &srcRowStride,
+                                     readFb->FlipY);
          if (!srcMap) {
             goto fail_no_memory;
          }
@@ -609,13 +612,15 @@ blit_linear(struct gl_context *ctx,
           */
          ctx->Driver.MapRenderbuffer(ctx, readRb,
                                      0, 0, readRb->Width, readRb->Height,
-                                     GL_MAP_READ_BIT, &srcMap, &srcRowStride);
+                                     GL_MAP_READ_BIT, &srcMap, &srcRowStride,
+                                     readFb->FlipY);
          if (!srcMap) {
             goto fail_no_memory;
          }
          ctx->Driver.MapRenderbuffer(ctx, drawRb,
                                      0, 0, drawRb->Width, drawRb->Height,
-                                     GL_MAP_WRITE_BIT, &dstMap, &dstRowStride);
+                                     GL_MAP_WRITE_BIT, &dstMap, &dstRowStride,
+                                     drawFb->FlipY);
          if (!dstMap) {
             ctx->Driver.UnmapRenderbuffer(ctx, readRb);
             goto fail_no_memory;
@@ -625,7 +630,7 @@ blit_linear(struct gl_context *ctx,
       for (dstRow = 0; dstRow < dstHeight; dstRow++) {
          const GLint dstY = dstYpos + dstRow;
          GLfloat srcRow = (dstRow + 0.5F) / dstHeight * srcHeight - 0.5F;
-         GLint srcRow0 = MAX2(0, IFLOOR(srcRow));
+         GLint srcRow0 = MAX2(0, util_ifloor(srcRow));
          GLint srcRow1 = srcRow0 + 1;
          GLfloat rowWeight = srcRow - srcRow0; /* fractional part of srcRow */
 
@@ -733,6 +738,8 @@ fail_no_memory:
  */
 void
 _swrast_BlitFramebuffer(struct gl_context *ctx,
+                        struct gl_framebuffer *readFb,
+                        struct gl_framebuffer *drawFb,
                         GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                         GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
                         GLbitfield mask, GLenum filter)
@@ -756,7 +763,7 @@ _swrast_BlitFramebuffer(struct gl_context *ctx,
    if (!_mesa_check_conditional_render(ctx))
       return; /* Do not blit */
 
-   if (!_mesa_clip_blit(ctx, &srcX0, &srcY0, &srcX1, &srcY1,
+   if (!_mesa_clip_blit(ctx, readFb, drawFb, &srcX0, &srcY0, &srcX1, &srcY1,
                         &dstX0, &dstY0, &dstX1, &dstY1)) {
       return;
    }
@@ -775,33 +782,34 @@ _swrast_BlitFramebuffer(struct gl_context *ctx,
        dstY0 < dstY1) {
       for (i = 0; i < 3; i++) {
          if (mask & buffers[i]) {
-	    if (swrast_fast_copy_pixels(ctx,
-					srcX0, srcY0,
-					srcX1 - srcX0, srcY1 - srcY0,
-					dstX0, dstY0,
-					buffer_enums[i])) {
-	       mask &= ~buffers[i];
-	    }
-	 }
+            if (swrast_fast_copy_pixels(ctx,
+                                        readFb, drawFb,
+                                        srcX0, srcY0,
+                                        srcX1 - srcX0, srcY1 - srcY0,
+                                        dstX0, dstY0,
+                                        buffer_enums[i])) {
+               mask &= ~buffers[i];
+            }
+         }
       }
 
       if (!mask)
-	 return;
+         return;
    }
 
    if (filter == GL_NEAREST) {
       for (i = 0; i < 3; i++) {
-	 if (mask & buffers[i]) {
-	    blit_nearest(ctx,  srcX0, srcY0, srcX1, srcY1,
-			 dstX0, dstY0, dstX1, dstY1, buffers[i]);
-	 }
+          if (mask & buffers[i]) {
+             blit_nearest(ctx, readFb, drawFb, srcX0, srcY0, srcX1, srcY1,
+                          dstX0, dstY0, dstX1, dstY1, buffers[i]);
+          }
       }
    }
    else {
-      ASSERT(filter == GL_LINEAR);
+      assert(filter == GL_LINEAR);
       if (mask & GL_COLOR_BUFFER_BIT) {  /* depth/stencil not allowed */
-	 blit_linear(ctx,  srcX0, srcY0, srcX1, srcY1,
-		     dstX0, dstY0, dstX1, dstY1);
+         blit_linear(ctx, readFb, drawFb, srcX0, srcY0, srcX1, srcY1,
+                     dstX0, dstY0, dstX1, dstY1);
       }
    }
 

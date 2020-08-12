@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,7 +22,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 /*
@@ -33,7 +33,6 @@
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/macros.h"
-#include "main/imports.h"
 #include "main/mtypes.h"
 #include "main/enums.h"
 
@@ -54,58 +53,55 @@
  * dma buffers.  Use strip/fan hardware primitives where possible.
  * Try to simulate missing primitives with indexed vertices.
  */
-#define HAVE_POINTS      0      /* Has it, but can't use because subpixel has to
-                                 * be adjusted for points on the INTEL/I845G
-                                 */
+#define HAVE_POINTS      1
 #define HAVE_LINES       1
 #define HAVE_LINE_STRIPS 1
 #define HAVE_TRIANGLES   1
 #define HAVE_TRI_STRIPS  1
-#define HAVE_TRI_STRIP_1 0      /* has it, template can't use it yet */
 #define HAVE_TRI_FANS    1
 #define HAVE_POLYGONS    1
+
 #define HAVE_QUADS       0
 #define HAVE_QUAD_STRIPS 0
-
 #define HAVE_ELTS        0
 
-static uint32_t hw_prim[GL_POLYGON + 1] = {
-   0,
-   PRIM3D_LINELIST,
-   PRIM3D_LINESTRIP,
-   PRIM3D_LINESTRIP,
-   PRIM3D_TRILIST,
-   PRIM3D_TRISTRIP,
-   PRIM3D_TRIFAN,
-   0,
-   0,
-   PRIM3D_POLY
+static const uint32_t hw_prim[GL_POLYGON + 1] = {
+   [GL_POINTS] = PRIM3D_POINTLIST,
+   [GL_LINES ] = PRIM3D_LINELIST,
+   [GL_LINE_LOOP] = PRIM3D_LINESTRIP,
+   [GL_LINE_STRIP] = PRIM3D_LINESTRIP,
+   [GL_TRIANGLES] = PRIM3D_TRILIST,
+   [GL_TRIANGLE_STRIP] = PRIM3D_TRISTRIP,
+   [GL_TRIANGLE_FAN] = PRIM3D_TRIFAN,
+   [GL_QUADS] = 0,
+   [GL_QUAD_STRIP] = 0,
+   [GL_POLYGON] = PRIM3D_POLY,
 };
 
 static const GLenum reduced_prim[GL_POLYGON + 1] = {
-   GL_POINTS,
-   GL_LINES,
-   GL_LINES,
-   GL_LINES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES
+   [GL_POINTS] = GL_POINTS,
+   [GL_LINES] = GL_LINES,
+   [GL_LINE_LOOP] = GL_LINES,
+   [GL_LINE_STRIP] = GL_LINES,
+   [GL_TRIANGLES] = GL_TRIANGLES,
+   [GL_TRIANGLE_STRIP] = GL_TRIANGLES,
+   [GL_TRIANGLE_FAN] = GL_TRIANGLES,
+   [GL_QUADS] = GL_TRIANGLES,
+   [GL_QUAD_STRIP] = GL_TRIANGLES,
+   [GL_POLYGON] = GL_TRIANGLES,
 };
 
 static const int scale_prim[GL_POLYGON + 1] = {
-   0,                           /* fallback case */
-   1,
-   2,
-   2,
-   1,
-   3,
-   3,
-   0,                           /* fallback case */
-   0,                           /* fallback case */
-   3
+   [GL_POINTS] = 1,
+   [GL_LINES] = 1,
+   [GL_LINE_LOOP] = 2,
+   [GL_LINE_STRIP] = 2,
+   [GL_TRIANGLES] = 1,
+   [GL_TRIANGLE_STRIP] = 3,
+   [GL_TRIANGLE_FAN] = 3,
+   [GL_QUADS] = 0,              /* fallback case */
+   [GL_QUAD_STRIP] = 0,         /* fallback case */
+   [GL_POLYGON] = 3,
 };
 
 
@@ -113,7 +109,7 @@ static void
 intelDmaPrimitive(struct intel_context *intel, GLenum prim)
 {
    if (0)
-      fprintf(stderr, "%s %s\n", __FUNCTION__, _mesa_lookup_enum_by_nr(prim));
+      fprintf(stderr, "%s %s\n", __func__, _mesa_enum_to_string(prim));
    INTEL_FIREVERTICES(intel);
    intel->vtbl.reduced_primitive_state(intel, reduced_prim[prim]);
    intel_set_prim(intel, hw_prim[prim]);
@@ -121,7 +117,7 @@ intelDmaPrimitive(struct intel_context *intel, GLenum prim)
 
 #define INTEL_NO_VBO_STATE_RESERVED 1500
 
-static INLINE GLuint intel_get_vb_max(struct intel_context *intel)
+static inline GLuint intel_get_vb_max(struct intel_context *intel)
 {
    GLuint ret;
 
@@ -133,7 +129,7 @@ static INLINE GLuint intel_get_vb_max(struct intel_context *intel)
    return ret;
 }
 
-static INLINE GLuint intel_get_current_max(struct intel_context *intel)
+static inline GLuint intel_get_current_max(struct intel_context *intel)
 {
    GLuint ret;
 
@@ -170,7 +166,7 @@ do {						\
 /*                          Render pipeline stage                     */
 /**********************************************************************/
 
-/* Heuristic to choose between the two render paths:  
+/* Heuristic to choose between the two render paths:
  */
 static bool
 choose_render(struct intel_context *intel, struct vertex_buffer *VB)
@@ -251,7 +247,7 @@ intel_run_render(struct gl_context * ctx, struct tnl_pipeline_stage *stage)
          continue;
 
       intel_render_tab_verts[prim & PRIM_MODE_MASK] (ctx, start,
-                                                     start + length, prim);
+                                                     length, prim);
    }
 
    tnl->Driver.Render.Finish(ctx);

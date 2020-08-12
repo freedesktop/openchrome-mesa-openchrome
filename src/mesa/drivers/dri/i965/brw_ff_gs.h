@@ -35,9 +35,9 @@
 
 
 #include "brw_context.h"
-#include "brw_eu.h"
+#include "compiler/brw_eu.h"
 
-#define MAX_GS_VERTS (4)	
+#define MAX_GS_VERTS (4)
 
 struct brw_ff_gs_prog_key {
    GLbitfield64 attrs;
@@ -71,7 +71,7 @@ struct brw_ff_gs_prog_key {
 };
 
 struct brw_ff_gs_compile {
-   struct brw_compile func;
+   struct brw_codegen func;
    struct brw_ff_gs_prog_key key;
    struct brw_ff_gs_prog_data prog_data;
 
@@ -110,6 +110,12 @@ void brw_ff_gs_lines(struct brw_ff_gs_compile *c);
 void gen6_sol_program(struct brw_ff_gs_compile *c,
                       struct brw_ff_gs_prog_key *key,
                       unsigned num_verts, bool check_edge_flag);
-void gen6_brw_upload_ff_gs_prog(struct brw_context *brw);
+
+void
+brw_upload_ff_gs_prog(struct brw_context *brw);
+
+void
+brw_codegen_ff_gs_prog(struct brw_context *brw,
+                       struct brw_ff_gs_prog_key *key);
 
 #endif

@@ -44,7 +44,7 @@
 #ifndef _GLAPI_H
 #define _GLAPI_H
 
-#include "u_thread.h"
+#include "util/macros.h"
 
 
 #ifdef __cplusplus
@@ -61,7 +61,7 @@ extern "C" {
 #    else
 #      define _GLAPI_EXPORT __declspec(dllimport)
 #    endif
-#  elif defined(__GNUC__) || (defined(__SUNPRO_C) && (__SUNPRO_C >= 0x590))
+#  elif defined(__GNUC__)
 #    define _GLAPI_EXPORT __attribute__((visibility("default")))
 #  else
 #    define _GLAPI_EXPORT
@@ -69,21 +69,14 @@ extern "C" {
 #endif /* _GLAPI_NO_EXPORTS */
 
 
-/* Is this needed?  It is incomplete anyway. */
-#ifdef USE_MGL_NAMESPACE
-#define _glapi_set_dispatch _mglapi_set_dispatch
-#define _glapi_get_dispatch _mglapi_get_dispatch
-#define _glapi_set_context _mglapi_set_context
-#define _glapi_get_context _mglapi_get_context
-#define _glapi_Dispatch _mglapi_Dispatch
-#define _glapi_Context _mglapi_Context
-#endif
-
 typedef void (*_glapi_proc)(void);
+
+typedef void (*_glapi_nop_handler_proc)(const char *name);
+
 struct _glapi_table;
 
 
-#if defined (GLX_USE_TLS)
+#if defined (USE_ELF_TLS)
 
 _GLAPI_EXPORT extern __thread struct _glapi_table * _glapi_tls_Dispatch
     __attribute__((tls_model("initial-exec")));
@@ -102,25 +95,16 @@ _GLAPI_EXPORT extern const void *_glapi_Context;
 _GLAPI_EXPORT extern struct _glapi_table *_glapi_Dispatch;
 _GLAPI_EXPORT extern void *_glapi_Context;
 
-# ifdef THREADS
-
-#  define GET_DISPATCH() \
+#define GET_DISPATCH() \
      (likely(_glapi_Dispatch) ? _glapi_Dispatch : _glapi_get_dispatch())
 
-#  define GET_CURRENT_CONTEXT(C)  struct gl_context *C = (struct gl_context *) \
+#define GET_CURRENT_CONTEXT(C)  struct gl_context *C = (struct gl_context *) \
      (likely(_glapi_Context) ? _glapi_Context : _glapi_get_context())
 
-# else
-
-#  define GET_DISPATCH() _glapi_Dispatch
-#  define GET_CURRENT_CONTEXT(C)  struct gl_context *C = (struct gl_context *) _glapi_Context
-
-# endif
-
-#endif /* defined (GLX_USE_TLS) */
+#endif /* defined (USE_ELF_TLS) */
 
 
-void
+_GLAPI_EXPORT void
 _glapi_destroy_multithread(void);
 
 
@@ -164,8 +148,21 @@ _GLAPI_EXPORT const char *
 _glapi_get_proc_name(unsigned int offset);
 
 
+#if defined(GLX_USE_APPLEGL) || defined(GLX_USE_WINDOWSGL)
 _GLAPI_EXPORT struct _glapi_table *
 _glapi_create_table_from_handle(void *handle, const char *symbol_prefix);
+
+_GLAPI_EXPORT void
+_glapi_table_patch(struct _glapi_table *, const char *name, void *wrapper);
+#endif
+
+
+_GLAPI_EXPORT void
+_glapi_set_nop_handler(_glapi_nop_handler_proc func);
+
+/** Return pointer to new dispatch table filled with no-op functions */
+_GLAPI_EXPORT struct _glapi_table *
+_glapi_new_nop_table(unsigned num_entries);
 
 
 /** Deprecated function */

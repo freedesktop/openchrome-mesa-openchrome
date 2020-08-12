@@ -78,7 +78,6 @@ struct xmesa_visual {
    int screen, visualID;
    int visualType;
    XMesaVisualInfo visinfo;	/* X's visual info (pointer to private copy) */
-   XVisualInfo *vishandle;	/* Only used in fakeglx.c */
    GLint BitsPerPixel;		/* True bits per pixel for XImages */
 
    GLboolean ximage_flag;	/* Use XImage for back buffer (not pixmap)? */
@@ -250,7 +249,7 @@ struct xmesa_buffer {
 #define PACK_TRUECOLOR( PIXEL, R, G, B )	\
    PIXEL = xmesa->xm_visual->RtoPixel[R]	\
          | xmesa->xm_visual->GtoPixel[G]	\
-         | xmesa->xm_visual->BtoPixel[B];	\
+         | xmesa->xm_visual->BtoPixel[B];
 
 
 /**
@@ -355,15 +354,12 @@ xmesa_init_driver_functions( XMesaVisual xmvisual,
                              struct dd_function_table *driver );
 
 extern void
-xmesa_update_state( struct gl_context *ctx, GLbitfield new_state );
-
-
-extern void
 xmesa_MapRenderbuffer(struct gl_context *ctx,
                       struct gl_renderbuffer *rb,
                       GLuint x, GLuint y, GLuint w, GLuint h,
                       GLbitfield mode,
-                      GLubyte **mapOut, GLint *rowStrideOut);
+                      GLubyte **mapOut, GLint *rowStrideOut,
+                      bool flip_y);
 
 extern void
 xmesa_UnmapRenderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb);

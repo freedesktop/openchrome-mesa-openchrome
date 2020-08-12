@@ -25,6 +25,8 @@
  * 
  **************************************************************************/
 
+#include "util/u_bitcast.h"
+
 static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
                                  struct draw_vertex_info *info,
                                  const struct draw_prim_info *prim_info )
@@ -41,16 +43,20 @@ static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
    unsigned j;
    unsigned i;
    bool have_cd = false;
+   bool uses_vp_idx = draw_current_shader_uses_viewport_index(pvs->draw);
    unsigned viewport_index_output =
       draw_current_shader_viewport_index_output(pvs->draw);
-   int viewport_index = 
-      draw_current_shader_uses_viewport_index(pvs->draw) ?
-      *((unsigned*)out->data[viewport_index_output]): 0;
+   int viewport_index = 0;
    int num_written_clipdistance =
       draw_current_shader_num_written_clipdistances(pvs->draw);
 
-   cd[0] = draw_current_shader_clipdistance_output(pvs->draw, 0);
-   cd[1] = draw_current_shader_clipdistance_output(pvs->draw, 1);
+   if (uses_vp_idx) {
+      viewport_index = u_bitcast_f2u(out->data[viewport_index_output][0]);
+      viewport_index = draw_clamp_viewport_idx(viewport_index);
+   }
+
+   cd[0] = draw_current_shader_ccdistance_output(pvs->draw, 0);
+   cd[1] = draw_current_shader_ccdistance_output(pvs->draw, 1);
 
    if (cd[0] != pos || cd[1] != pos)
       have_cd = true;
@@ -63,22 +69,23 @@ static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
    }
 
    assert(pos != -1);
+   unsigned prim_idx = 0, prim_vert_idx = 0;
    for (j = 0; j < info->count; j++) {
       float *position = out->data[pos];
       unsigned mask = 0x0;
-      float *scale = pvs->draw->viewports[0].scale;
-      float *trans = pvs->draw->viewports[0].translate;
-      if (draw_current_shader_uses_viewport_index(pvs->draw)) {
-         unsigned verts_per_prim = u_vertices_per_prim(prim_info->prim);
+
+      if (uses_vp_idx) {
          /* only change the viewport_index for the leading vertex */
-         if (!(j % verts_per_prim)) {
-            viewport_index = *((unsigned*)out->data[viewport_index_output]);
+         if (prim_vert_idx == (prim_info->primitive_lengths[prim_idx])) {
+            prim_idx++;
+            prim_vert_idx = 0;
+            viewport_index = u_bitcast_f2u(out->data[viewport_index_output][0]);
             viewport_index = draw_clamp_viewport_idx(viewport_index);
          }
-         scale = pvs->draw->viewports[viewport_index].scale;
-         trans = pvs->draw->viewports[viewport_index].translate;
+         prim_vert_idx++;
       }
-  
+      float *scale = pvs->draw->viewports[viewport_index].scale;
+      float *trans = pvs->draw->viewports[viewport_index].translate;
       initialize_vertex_header(out);
 
       if (flags & (DO_CLIP_XY | DO_CLIP_XY_GUARD_BAND |
@@ -91,34 +98,34 @@ static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
          }
 
          for (i = 0; i < 4; i++) {
-            out->clip[i] = clipvertex[i];
-            out->pre_clip_pos[i] = position[i];
+            out->clip_pos[i] = position[i];
          }
 
+         /* Be careful with NaNs. Comparisons must be true for them. */
          /* Do the hardwired planes first:
           */
          if (flags & DO_CLIP_XY_GUARD_BAND) {
-            if (-0.50 * position[0] + position[3] < 0) mask |= (1<<0);
-            if ( 0.50 * position[0] + position[3] < 0) mask |= (1<<1);
-            if (-0.50 * position[1] + position[3] < 0) mask |= (1<<2);
-            if ( 0.50 * position[1] + position[3] < 0) mask |= (1<<3);
+            if (!(-0.50 * position[0] + position[3] >= 0)) mask |= (1<<0);
+            if (!( 0.50 * position[0] + position[3] >= 0)) mask |= (1<<1);
+            if (!(-0.50 * position[1] + position[3] >= 0)) mask |= (1<<2);
+            if (!( 0.50 * position[1] + position[3] >= 0)) mask |= (1<<3);
          }
          else if (flags & DO_CLIP_XY) {
-            if (-position[0] + position[3] < 0) mask |= (1<<0);
-            if ( position[0] + position[3] < 0) mask |= (1<<1);
-            if (-position[1] + position[3] < 0) mask |= (1<<2);
-            if ( position[1] + position[3] < 0) mask |= (1<<3);
+            if (!(-position[0] + position[3] >= 0)) mask |= (1<<0);
+            if (!( position[0] + position[3] >= 0)) mask |= (1<<1);
+            if (!(-position[1] + position[3] >= 0)) mask |= (1<<2);
+            if (!( position[1] + position[3] >= 0)) mask |= (1<<3);
          }
 
          /* Clip Z planes according to full cube, half cube or none.
           */
          if (flags & DO_CLIP_FULL_Z) {
-            if ( position[2] + position[3] < 0) mask |= (1<<4);
-            if (-position[2] + position[3] < 0) mask |= (1<<5);
+            if (!( position[2] + position[3] >= 0)) mask |= (1<<4);
+            if (!(-position[2] + position[3] >= 0)) mask |= (1<<5);
          }
          else if (flags & DO_CLIP_HALF_Z) {
-            if ( position[2]               < 0) mask |= (1<<4);
-            if (-position[2] + position[3] < 0) mask |= (1<<5);
+            if (!( position[2]               >= 0)) mask |= (1<<4);
+            if (!(-position[2] + position[3] >= 0)) mask |= (1<<5);
          }
 
          if (flags & DO_CLIP_USER) {
@@ -137,7 +144,6 @@ static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
                if (have_cd && num_written_clipdistance) {
                   float clipdist;
                   i = plane_idx - 6;
-                  out->have_clipdist = 1;
                   /* first four clip distance in first vector etc. */
                   if (i < 4)
                      clipdist = out->data[cd[0]][i];
@@ -146,7 +152,7 @@ static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
                   if (clipdist < 0 || util_is_inf_or_nan(clipdist))
                      mask |= 1 << plane_idx;
                } else {
-                  if (dot4(clipvertex, plane[plane_idx]) < 0)
+                  if (!(dot4(clipvertex, plane[plane_idx]) >= 0))
                      mask |= 1 << plane_idx;
                }
             }
@@ -192,7 +198,6 @@ static boolean TAG(do_cliptest)( struct pt_post_vs *pvs,
 
       out = (struct vertex_header *)( (char *)out + info->stride );
    }
-
    return need_pipeline != 0;
 }
 

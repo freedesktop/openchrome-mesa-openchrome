@@ -27,8 +27,8 @@
 #define USE_TRACE 0
 #define WIDTH 300
 #define HEIGHT 300
-#define NEAR 30
-#define FAR 1000
+#define NEAR 0
+#define FAR 1
 #define FLIP 0
 
 /* pipe_*_state structs */
@@ -48,7 +48,7 @@
 #include "cso_cache/cso_context.h"
 
 /* debug_dump_surface_bmp */
-#include "util/u_debug.h"
+#include "util/u_debug_image.h"
 /* util_draw_vertex_buffer helper */
 #include "util/u_draw_quad.h"
 /* FREE & CALLOC_STRUCT */
@@ -70,7 +70,7 @@ struct program
 	struct pipe_rasterizer_state rasterizer;
 	struct pipe_viewport_state viewport;
 	struct pipe_framebuffer_state framebuffer;
-	struct pipe_vertex_element velem[2];
+	struct cso_velems_state velem;
 
 	void *vs;
 	void *fs;
@@ -91,12 +91,12 @@ static void init_prog(struct program *p)
 	assert(ret);
 
 	/* init a pipe screen */
-	p->screen = pipe_loader_create_screen(p->dev, PIPE_SEARCH_DIR);
+	p->screen = pipe_loader_create_screen(p->dev);
 	assert(p->screen);
 
 	/* create the pipe driver context and cso context */
-	p->pipe = p->screen->context_create(p->screen, NULL);
-	p->cso = cso_create_context(p->pipe);
+	p->pipe = p->screen->context_create(p->screen, NULL, 0);
+	p->cso = cso_create_context(p->pipe, 0);
 
 	/* set clear color */
 	p->clear_color.f[0] = 0.3;
@@ -154,7 +154,8 @@ static void init_prog(struct program *p)
 	p->rasterizer.cull_face = PIPE_FACE_NONE;
 	p->rasterizer.half_pixel_center = 1;
 	p->rasterizer.bottom_edge_rule = 1;
-	p->rasterizer.depth_clip = 1;
+	p->rasterizer.depth_clip_near = 1;
+	p->rasterizer.depth_clip_far = 1;
 
 	surf_tmpl.format = PIPE_FORMAT_B8G8R8A8_UNORM;
 	surf_tmpl.u.tex.level = 0;
@@ -171,7 +172,7 @@ static void init_prog(struct program *p)
 	{
 		float x = 0;
 		float y = 0;
-		float z = FAR;
+		float z = NEAR;
 		float half_width = (float)WIDTH / 2.0f;
 		float half_height = (float)HEIGHT / 2.0f;
 		float half_depth = ((float)FAR - (float)NEAR) / 2.0f;
@@ -195,23 +196,25 @@ static void init_prog(struct program *p)
 	}
 
 	/* vertex elements state */
-	memset(p->velem, 0, sizeof(p->velem));
-	p->velem[0].src_offset = 0 * 4 * sizeof(float); /* offset 0, first element */
-	p->velem[0].instance_divisor = 0;
-	p->velem[0].vertex_buffer_index = 0;
-	p->velem[0].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+	memset(&p->velem, 0, sizeof(p->velem));
+        p->velem.count = 2;
 
-	p->velem[1].src_offset = 1 * 4 * sizeof(float); /* offset 16, second element */
-	p->velem[1].instance_divisor = 0;
-	p->velem[1].vertex_buffer_index = 0;
-	p->velem[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+	p->velem.velems[0].src_offset = 0 * 4 * sizeof(float); /* offset 0, first element */
+	p->velem.velems[0].instance_divisor = 0;
+	p->velem.velems[0].vertex_buffer_index = 0;
+	p->velem.velems[0].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+
+	p->velem.velems[1].src_offset = 1 * 4 * sizeof(float); /* offset 16, second element */
+	p->velem.velems[1].instance_divisor = 0;
+	p->velem.velems[1].vertex_buffer_index = 0;
+	p->velem.velems[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
 
 	/* vertex shader */
 	{
-			const uint semantic_names[] = { TGSI_SEMANTIC_POSITION,
-							TGSI_SEMANTIC_COLOR };
-			const uint semantic_indexes[] = { 0, 0 };
-			p->vs = util_make_vertex_passthrough_shader(p->pipe, 2, semantic_names, semantic_indexes, FALSE);
+		const enum tgsi_semantic semantic_names[] =
+			{ TGSI_SEMANTIC_POSITION, TGSI_SEMANTIC_COLOR };
+		const uint semantic_indexes[] = { 0, 0 };
+		p->vs = util_make_vertex_passthrough_shader(p->pipe, 2, semantic_names, semantic_indexes, FALSE);
 	}
 
 	/* fragment shader */
@@ -243,7 +246,7 @@ static void draw(struct program *p)
 	cso_set_framebuffer(p->cso, &p->framebuffer);
 
 	/* clear the render target */
-	p->pipe->clear(p->pipe, PIPE_CLEAR_COLOR, &p->clear_color, 0, 0);
+	p->pipe->clear(p->pipe, PIPE_CLEAR_COLOR, NULL, &p->clear_color, 0, 0);
 
 	/* set misc state we care about */
 	cso_set_blend(p->cso, &p->blend);
@@ -256,7 +259,7 @@ static void draw(struct program *p)
 	cso_set_vertex_shader_handle(p->cso, p->vs);
 
 	/* vertex element data */
-	cso_set_vertex_elements(p->cso, 2, p->velem);
+	cso_set_vertex_elements(p->cso, &p->velem);
 
 	util_draw_vertex_buffer(p->pipe, p->cso,
 	                        p->vbuf, 0, 0,

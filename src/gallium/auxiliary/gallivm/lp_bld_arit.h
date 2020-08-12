@@ -38,6 +38,7 @@
 
 
 #include "gallivm/lp_bld.h"
+#include "pipe/p_compiler.h"
 
 
 struct lp_type;
@@ -71,10 +72,29 @@ lp_build_sub(struct lp_build_context *bld,
              LLVMValueRef a,
              LLVMValueRef b);
 
+
+LLVMValueRef
+lp_build_mul_norm(struct gallivm_state *gallivm,
+                  struct lp_type wide_type,
+                  LLVMValueRef a,
+                  LLVMValueRef b);
+
 LLVMValueRef
 lp_build_mul(struct lp_build_context *bld,
              LLVMValueRef a,
              LLVMValueRef b);
+
+LLVMValueRef
+lp_build_mul_32_lohi_cpu(struct lp_build_context *bld,
+                         LLVMValueRef a,
+                         LLVMValueRef b,
+                         LLVMValueRef *res_hi);
+
+LLVMValueRef
+lp_build_mul_32_lohi(struct lp_build_context *bld,
+                     LLVMValueRef a,
+                     LLVMValueRef b,
+                     LLVMValueRef *res_hi);
 
 LLVMValueRef
 lp_build_mul_imm(struct lp_build_context *bld,
@@ -85,6 +105,21 @@ LLVMValueRef
 lp_build_div(struct lp_build_context *bld,
              LLVMValueRef a,
              LLVMValueRef b);
+
+
+/* llvm.fmuladd.* intrinsic */
+LLVMValueRef
+lp_build_fmuladd(LLVMBuilderRef builder,
+                 LLVMValueRef a,
+                 LLVMValueRef b,
+                 LLVMValueRef c);
+
+/* a * b + c */
+LLVMValueRef
+lp_build_mad(struct lp_build_context *bld,
+             LLVMValueRef a,
+             LLVMValueRef b,
+             LLVMValueRef c);
 
 
 /**

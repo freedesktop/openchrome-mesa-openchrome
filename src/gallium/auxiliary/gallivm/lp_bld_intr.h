@@ -36,6 +36,7 @@
 #ifndef LP_BLD_INTR_H
 #define LP_BLD_INTR_H
 
+#include <llvm/Config/llvm-config.h>
 
 #include "gallivm/lp_bld.h"
 #include "gallivm/lp_bld_init.h"
@@ -46,6 +47,29 @@
  */
 #define LP_MAX_FUNC_ARGS 32
 
+enum lp_func_attr {
+   LP_FUNC_ATTR_ALWAYSINLINE = (1 << 0),
+   LP_FUNC_ATTR_INREG        = (1 << 2),
+   LP_FUNC_ATTR_NOALIAS      = (1 << 3),
+   LP_FUNC_ATTR_NOUNWIND     = (1 << 4),
+   LP_FUNC_ATTR_READNONE     = (1 << 5),
+   LP_FUNC_ATTR_READONLY     = (1 << 6),
+   LP_FUNC_ATTR_WRITEONLY    = LLVM_VERSION_MAJOR >= 4 ? (1 << 7) : 0,
+   LP_FUNC_ATTR_INACCESSIBLE_MEM_ONLY = LLVM_VERSION_MAJOR >= 4 ? (1 << 8) : 0,
+   LP_FUNC_ATTR_CONVERGENT   = LLVM_VERSION_MAJOR >= 4 ? (1 << 9) : 0,
+
+   /* Legacy intrinsic that needs attributes on function declarations
+    * and they must match the internal LLVM definition exactly, otherwise
+    * intrinsic selection fails.
+    */
+   LP_FUNC_ATTR_LEGACY       = (1u << 31),
+};
+
+void
+lp_format_intrinsic(char *name,
+                    size_t size,
+                    const char *name_root,
+                    LLVMTypeRef type);
 
 LLVMValueRef
 lp_declare_intrinsic(LLVMModuleRef module,
@@ -54,12 +78,17 @@ lp_declare_intrinsic(LLVMModuleRef module,
                      LLVMTypeRef *arg_types,
                      unsigned num_args);
 
+void
+lp_add_function_attr(LLVMValueRef function_or_call,
+                     int attr_idx, enum lp_func_attr attr);
+
 LLVMValueRef
 lp_build_intrinsic(LLVMBuilderRef builder,
                    const char *name,
                    LLVMTypeRef ret_type,
                    LLVMValueRef *args,
-                   unsigned num_args);
+                   unsigned num_args,
+                   unsigned attr_mask);
 
 
 LLVMValueRef

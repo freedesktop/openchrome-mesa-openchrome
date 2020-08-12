@@ -81,13 +81,13 @@ struct softpipe_transfer
 
 
 /** cast wrappers */
-static INLINE struct softpipe_resource *
+static inline struct softpipe_resource *
 softpipe_resource(struct pipe_resource *pt)
 {
    return (struct softpipe_resource *) pt;
 }
 
-static INLINE struct softpipe_transfer *
+static inline struct softpipe_transfer *
 softpipe_transfer(struct pipe_transfer *pt)
 {
    return (struct softpipe_transfer *) pt;
@@ -99,7 +99,7 @@ softpipe_transfer(struct pipe_transfer *pt)
  * This is a short-cut instead of using map()/unmap(), which should
  * probably be fixed.
  */
-static INLINE void *
+static inline void *
 softpipe_resource_data(struct pipe_resource *pt)
 {
    if (!pt)
@@ -116,5 +116,7 @@ softpipe_init_screen_texture_funcs(struct pipe_screen *screen);
 extern void
 softpipe_init_texture_funcs(struct pipe_context *pipe);
 
-
+unsigned
+softpipe_get_tex_image_offset(const struct softpipe_resource *spr,
+                              unsigned level, unsigned layer);
 #endif /* SP_TEXTURE */

@@ -33,12 +33,18 @@
  * -# Transformation of a point p by a matrix M is: p' = M * p
  */
 
+#include <stddef.h>
 
+#include "c99_math.h"
+#include "main/errors.h"
 #include "main/glheader.h"
-#include "main/imports.h"
 #include "main/macros.h"
+#define MATH_ASM_PTR_SIZE sizeof(void *)
+#include "math/m_vector_asm.h"
 
 #include "m_matrix.h"
+
+#include "util/u_memory.h"
 
 
 /**
@@ -49,7 +55,7 @@
 /*@{*/
 #define MAT_FLAG_IDENTITY       0     /**< is an identity matrix flag.
                                        *   (Not actually used - the identity
-                                       *   matrix is identified by the absense
+                                       *   matrix is identified by the absence
                                        *   of all other flags.)
                                        */
 #define MAT_FLAG_GENERAL        0x1   /**< is a general matrix flag */
@@ -99,15 +105,15 @@
 /*@}*/
 
 
-/** 
+/**
  * Test geometry related matrix flags.
- * 
+ *
  * \param mat a pointer to a GLmatrix structure.
  * \param a flags mask.
  *
  * \returns non-zero if all geometry related matrix flags are contained within
  * the mask, or zero otherwise.
- */ 
+ */
 #define TEST_MAT_FLAGS(mat, a)  \
     ((MAT_FLAGS_GEOMETRY & (~(a)) & ((mat)->flags) ) == 0)
 
@@ -130,7 +136,7 @@ static const char *types[] = {
 /**
  * Identity matrix.
  */
-static GLfloat Identity[16] = {
+static const GLfloat Identity[16] = {
    1.0, 0.0, 0.0, 0.0,
    0.0, 1.0, 0.0, 0.0,
    0.0, 0.0, 1.0, 0.0,
@@ -157,7 +163,7 @@ static GLfloat Identity[16] = {
  * \warning Is assumed that \p product != \p b. \p product == \p a is allowed.
  *
  * \note KW: 4*16 = 64 multiplications
- * 
+ *
  * \author This \c matmul was contributed by Thomas Malik
  */
 static void matmul4( GLfloat *product, const GLfloat *a, const GLfloat *b )
@@ -207,7 +213,7 @@ static void matmul34( GLfloat *product, const GLfloat *a, const GLfloat *b )
  * matrix, and that will receive the product result.
  * \param m right multiplication matrix array.
  * \param flags flags of the matrix \p m.
- * 
+ *
  * Joins both flags and marks the type and inverse as dirty.  Calls matmul34()
  * if both matrices are 3D, or matmul4() otherwise.
  */
@@ -227,7 +233,7 @@ static void matrix_multf( GLmatrix *mat, const GLfloat *m, GLuint flags )
  * \param dest destination matrix.
  * \param a left matrix.
  * \param b right matrix.
- * 
+ *
  * Joins both flags and marks the type and inverse as dirty.  Calls matmul34()
  * if both matrices are 3D, or matmul4() otherwise.
  */
@@ -250,7 +256,7 @@ _math_matrix_mul_matrix( GLmatrix *dest, const GLmatrix *a, const GLmatrix *b )
  *
  * \param dest left and destination matrix.
  * \param m right matrix array.
- * 
+ *
  * Marks the matrix flags with general flag, and type and inverse dirty flags.
  * Calls matmul4() for the multiplication.
  */
@@ -289,7 +295,7 @@ static void print_matrix_floats( const GLfloat m[16] )
 
 /**
  * Dumps the contents of a GLmatrix structure.
- * 
+ *
  * \param m pointer to the GLmatrix structure.
  */
 void
@@ -315,10 +321,10 @@ _math_matrix_print( const GLmatrix *m )
  * \param m matrix array.
  * \param c column of the desired element.
  * \param r row of the desired element.
- * 
+ *
  * \return value of the desired element.
  *
- * Calculate the linear storage index of the element and references it. 
+ * Calculate the linear storage index of the element and references it.
  */
 #define MAT(m,r,c) (m)[(c)*4+(r)]
 
@@ -336,12 +342,12 @@ _math_matrix_print( const GLmatrix *m )
 
 /**
  * Compute inverse of 4x4 transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return GL_TRUE for success, GL_FALSE for failure (\p singular matrix).
- * 
+ *
  * \author
  * Code contributed by Jacques Leroy jle@star.be
  *
@@ -376,10 +382,10 @@ static GLboolean invert_matrix_general( GLmatrix *mat )
    r3[7] = 1.0, r3[4] = r3[5] = r3[6] = 0.0;
 
    /* choose pivot - or die */
-   if (FABSF(r3[0])>FABSF(r2[0])) SWAP_ROWS(r3, r2);
-   if (FABSF(r2[0])>FABSF(r1[0])) SWAP_ROWS(r2, r1);
-   if (FABSF(r1[0])>FABSF(r0[0])) SWAP_ROWS(r1, r0);
-   if (0.0 == r0[0])  return GL_FALSE;
+   if (fabsf(r3[0])>fabsf(r2[0])) SWAP_ROWS(r3, r2);
+   if (fabsf(r2[0])>fabsf(r1[0])) SWAP_ROWS(r2, r1);
+   if (fabsf(r1[0])>fabsf(r0[0])) SWAP_ROWS(r1, r0);
+   if (0.0F == r0[0])  return GL_FALSE;
 
    /* eliminate first variable     */
    m1 = r1[0]/r0[0]; m2 = r2[0]/r0[0]; m3 = r3[0]/r0[0];
@@ -387,31 +393,31 @@ static GLboolean invert_matrix_general( GLmatrix *mat )
    s = r0[2]; r1[2] -= m1 * s; r2[2] -= m2 * s; r3[2] -= m3 * s;
    s = r0[3]; r1[3] -= m1 * s; r2[3] -= m2 * s; r3[3] -= m3 * s;
    s = r0[4];
-   if (s != 0.0) { r1[4] -= m1 * s; r2[4] -= m2 * s; r3[4] -= m3 * s; }
+   if (s != 0.0F) { r1[4] -= m1 * s; r2[4] -= m2 * s; r3[4] -= m3 * s; }
    s = r0[5];
-   if (s != 0.0) { r1[5] -= m1 * s; r2[5] -= m2 * s; r3[5] -= m3 * s; }
+   if (s != 0.0F) { r1[5] -= m1 * s; r2[5] -= m2 * s; r3[5] -= m3 * s; }
    s = r0[6];
-   if (s != 0.0) { r1[6] -= m1 * s; r2[6] -= m2 * s; r3[6] -= m3 * s; }
+   if (s != 0.0F) { r1[6] -= m1 * s; r2[6] -= m2 * s; r3[6] -= m3 * s; }
    s = r0[7];
-   if (s != 0.0) { r1[7] -= m1 * s; r2[7] -= m2 * s; r3[7] -= m3 * s; }
+   if (s != 0.0F) { r1[7] -= m1 * s; r2[7] -= m2 * s; r3[7] -= m3 * s; }
 
    /* choose pivot - or die */
-   if (FABSF(r3[1])>FABSF(r2[1])) SWAP_ROWS(r3, r2);
-   if (FABSF(r2[1])>FABSF(r1[1])) SWAP_ROWS(r2, r1);
-   if (0.0 == r1[1])  return GL_FALSE;
+   if (fabsf(r3[1])>fabsf(r2[1])) SWAP_ROWS(r3, r2);
+   if (fabsf(r2[1])>fabsf(r1[1])) SWAP_ROWS(r2, r1);
+   if (0.0F == r1[1])  return GL_FALSE;
 
    /* eliminate second variable */
    m2 = r2[1]/r1[1]; m3 = r3[1]/r1[1];
    r2[2] -= m2 * r1[2]; r3[2] -= m3 * r1[2];
    r2[3] -= m2 * r1[3]; r3[3] -= m3 * r1[3];
-   s = r1[4]; if (0.0 != s) { r2[4] -= m2 * s; r3[4] -= m3 * s; }
-   s = r1[5]; if (0.0 != s) { r2[5] -= m2 * s; r3[5] -= m3 * s; }
-   s = r1[6]; if (0.0 != s) { r2[6] -= m2 * s; r3[6] -= m3 * s; }
-   s = r1[7]; if (0.0 != s) { r2[7] -= m2 * s; r3[7] -= m3 * s; }
+   s = r1[4]; if (0.0F != s) { r2[4] -= m2 * s; r3[4] -= m3 * s; }
+   s = r1[5]; if (0.0F != s) { r2[5] -= m2 * s; r3[5] -= m3 * s; }
+   s = r1[6]; if (0.0F != s) { r2[6] -= m2 * s; r3[6] -= m3 * s; }
+   s = r1[7]; if (0.0F != s) { r2[7] -= m2 * s; r3[7] -= m3 * s; }
 
    /* choose pivot - or die */
-   if (FABSF(r3[2])>FABSF(r2[2])) SWAP_ROWS(r3, r2);
-   if (0.0 == r2[2])  return GL_FALSE;
+   if (fabsf(r3[2])>fabsf(r2[2])) SWAP_ROWS(r3, r2);
+   if (0.0F == r2[2])  return GL_FALSE;
 
    /* eliminate third variable */
    m3 = r3[2]/r2[2];
@@ -420,7 +426,7 @@ static GLboolean invert_matrix_general( GLmatrix *mat )
    r3[7] -= m3 * r2[7];
 
    /* last check */
-   if (0.0 == r3[3]) return GL_FALSE;
+   if (0.0F == r3[3]) return GL_FALSE;
 
    s = 1.0F/r3[3];             /* now back substitute row 3 */
    r3[4] *= s; r3[5] *= s; r3[6] *= s; r3[7] *= s;
@@ -464,10 +470,10 @@ static GLboolean invert_matrix_general( GLmatrix *mat )
 
 /**
  * Compute inverse of a general 3d transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return GL_TRUE for success, GL_FALSE for failure (\p singular matrix).
  *
  * \author Adapted from graphics gems II.
@@ -489,26 +495,26 @@ static GLboolean invert_matrix_3d_general( GLmatrix *mat )
     */
    pos = neg = 0.0;
    t =  MAT(in,0,0) * MAT(in,1,1) * MAT(in,2,2);
-   if (t >= 0.0) pos += t; else neg += t;
+   if (t >= 0.0F) pos += t; else neg += t;
 
    t =  MAT(in,1,0) * MAT(in,2,1) * MAT(in,0,2);
-   if (t >= 0.0) pos += t; else neg += t;
+   if (t >= 0.0F) pos += t; else neg += t;
 
    t =  MAT(in,2,0) * MAT(in,0,1) * MAT(in,1,2);
-   if (t >= 0.0) pos += t; else neg += t;
+   if (t >= 0.0F) pos += t; else neg += t;
 
    t = -MAT(in,2,0) * MAT(in,1,1) * MAT(in,0,2);
-   if (t >= 0.0) pos += t; else neg += t;
+   if (t >= 0.0F) pos += t; else neg += t;
 
    t = -MAT(in,1,0) * MAT(in,0,1) * MAT(in,2,2);
-   if (t >= 0.0) pos += t; else neg += t;
+   if (t >= 0.0F) pos += t; else neg += t;
 
    t = -MAT(in,0,0) * MAT(in,2,1) * MAT(in,1,2);
-   if (t >= 0.0) pos += t; else neg += t;
+   if (t >= 0.0F) pos += t; else neg += t;
 
    det = pos + neg;
 
-   if (FABSF(det) < 1e-25)
+   if (fabsf(det) < 1e-25F)
       return GL_FALSE;
 
    det = 1.0F / det;
@@ -538,10 +544,10 @@ static GLboolean invert_matrix_3d_general( GLmatrix *mat )
 
 /**
  * Compute inverse of a 3d transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return GL_TRUE for success, GL_FALSE for failure (\p singular matrix).
  *
  * If the matrix is not an angle preserving matrix then calls
@@ -563,7 +569,7 @@ static GLboolean invert_matrix_3d( GLmatrix *mat )
                        MAT(in,0,1) * MAT(in,0,1) +
                        MAT(in,0,2) * MAT(in,0,2));
 
-      if (scale == 0.0)
+      if (scale == 0.0F)
          return GL_FALSE;
 
       scale = 1.0F / scale;
@@ -621,10 +627,10 @@ static GLboolean invert_matrix_3d( GLmatrix *mat )
 
 /**
  * Compute inverse of an identity transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return always GL_TRUE.
  *
  * Simply copies Identity into GLmatrix::inv.
@@ -637,13 +643,13 @@ static GLboolean invert_matrix_identity( GLmatrix *mat )
 
 /**
  * Compute inverse of a no-rotation 3d transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return GL_TRUE for success, GL_FALSE for failure (\p singular matrix).
  *
- * Calculates the 
+ * Calculates the
  */
 static GLboolean invert_matrix_3d_no_rot( GLmatrix *mat )
 {
@@ -653,7 +659,7 @@ static GLboolean invert_matrix_3d_no_rot( GLmatrix *mat )
    if (MAT(in,0,0) == 0 || MAT(in,1,1) == 0 || MAT(in,2,2) == 0 )
       return GL_FALSE;
 
-   memcpy( out, Identity, 16 * sizeof(GLfloat) );
+   memcpy( out, Identity, sizeof(Identity) );
    MAT(out,0,0) = 1.0F / MAT(in,0,0);
    MAT(out,1,1) = 1.0F / MAT(in,1,1);
    MAT(out,2,2) = 1.0F / MAT(in,2,2);
@@ -669,10 +675,10 @@ static GLboolean invert_matrix_3d_no_rot( GLmatrix *mat )
 
 /**
  * Compute inverse of a no-rotation 2d transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return GL_TRUE for success, GL_FALSE for failure (\p singular matrix).
  *
  * Calculates the inverse matrix by applying the inverse scaling and
@@ -686,7 +692,7 @@ static GLboolean invert_matrix_2d_no_rot( GLmatrix *mat )
    if (MAT(in,0,0) == 0 || MAT(in,1,1) == 0)
       return GL_FALSE;
 
-   memcpy( out, Identity, 16 * sizeof(GLfloat) );
+   memcpy( out, Identity, sizeof(Identity) );
    MAT(out,0,0) = 1.0F / MAT(in,0,0);
    MAT(out,1,1) = 1.0F / MAT(in,1,1);
 
@@ -708,7 +714,7 @@ static GLboolean invert_matrix_perspective( GLmatrix *mat )
    if (MAT(in,2,3) == 0)
       return GL_FALSE;
 
-   memcpy( out, Identity, 16 * sizeof(GLfloat) );
+   memcpy( out, Identity, sizeof(Identity) );
 
    MAT(out,0,0) = 1.0F / MAT(in,0,0);
    MAT(out,1,1) = 1.0F / MAT(in,1,1);
@@ -753,10 +759,10 @@ static inv_mat_func inv_mat_tab[7] = {
 
 /**
  * Compute inverse of a transformation matrix.
- * 
+ *
  * \param mat pointer to a GLmatrix structure. The matrix inverse will be
  * stored in the GLmatrix::inv attribute.
- * 
+ *
  * \return GL_TRUE for success, GL_FALSE for failure (\p singular matrix).
  *
  * Calls the matrix inversion function in inv_mat_tab corresponding to the
@@ -798,10 +804,10 @@ _math_matrix_rotate( GLmatrix *mat,
    GLfloat m[16];
    GLboolean optimized;
 
-   s = (GLfloat) sin( angle * DEG2RAD );
-   c = (GLfloat) cos( angle * DEG2RAD );
+   s = sinf( angle * M_PI / 180.0 );
+   c = cosf( angle * M_PI / 180.0 );
 
-   memcpy(m, Identity, sizeof(GLfloat)*16);
+   memcpy(m, Identity, sizeof(Identity));
    optimized = GL_FALSE;
 
 #define M(row,col)  m[col*4+row]
@@ -858,7 +864,7 @@ _math_matrix_rotate( GLmatrix *mat,
    if (!optimized) {
       const GLfloat mag = sqrtf(x * x + y * y + z * z);
 
-      if (mag <= 1.0e-4) {
+      if (mag <= 1.0e-4F) {
          /* no rotation, leave mat as-is */
          return;
       }
@@ -1001,9 +1007,9 @@ _math_matrix_frustum( GLmatrix *mat,
 }
 
 /**
- * Apply an orthographic projection matrix.
+ * Create an orthographic projection matrix.
  *
- * \param mat matrix to apply the projection.
+ * \param m float array in which to store the project matrix
  * \param left left clipping plane coordinate.
  * \param right right clipping plane coordinate.
  * \param bottom bottom clipping plane coordinate.
@@ -1011,17 +1017,15 @@ _math_matrix_frustum( GLmatrix *mat,
  * \param nearval distance to the near clipping plane.
  * \param farval distance to the far clipping plane.
  *
- * Creates the projection matrix and multiplies it with \p mat, marking the
- * MAT_FLAG_GENERAL_SCALE and MAT_FLAG_TRANSLATION flags.
+ * Creates the projection matrix and stored the values in \p m.  As with other
+ * OpenGL matrices, the data is stored in column-major ordering.
  */
 void
-_math_matrix_ortho( GLmatrix *mat,
-		    GLfloat left, GLfloat right,
-		    GLfloat bottom, GLfloat top,
-		    GLfloat nearval, GLfloat farval )
+_math_float_ortho(float *m,
+                  float left, float right,
+                  float bottom, float top,
+                  float nearval, float farval)
 {
-   GLfloat m[16];
-
 #define M(row,col)  m[col*4+row]
    M(0,0) = 2.0F / (right-left);
    M(0,1) = 0.0F;
@@ -1043,7 +1047,31 @@ _math_matrix_ortho( GLmatrix *mat,
    M(3,2) = 0.0F;
    M(3,3) = 1.0F;
 #undef M
+}
 
+/**
+ * Apply an orthographic projection matrix.
+ *
+ * \param mat matrix to apply the projection.
+ * \param left left clipping plane coordinate.
+ * \param right right clipping plane coordinate.
+ * \param bottom bottom clipping plane coordinate.
+ * \param top top clipping plane coordinate.
+ * \param nearval distance to the near clipping plane.
+ * \param farval distance to the far clipping plane.
+ *
+ * Creates the projection matrix and multiplies it with \p mat, marking the
+ * MAT_FLAG_GENERAL_SCALE and MAT_FLAG_TRANSLATION flags.
+ */
+void
+_math_matrix_ortho( GLmatrix *mat,
+		    GLfloat left, GLfloat right,
+		    GLfloat bottom, GLfloat top,
+		    GLfloat nearval, GLfloat farval )
+{
+   GLfloat m[16];
+
+   _math_float_ortho(m, left, right, bottom, top, nearval, farval);
    matrix_multf( mat, m, (MAT_FLAG_GENERAL_SCALE|MAT_FLAG_TRANSLATION));
 }
 
@@ -1069,7 +1097,7 @@ _math_matrix_scale( GLmatrix *mat, GLfloat x, GLfloat y, GLfloat z )
    m[2] *= x;   m[6] *= y;   m[10] *= z;
    m[3] *= x;   m[7] *= y;   m[11] *= z;
 
-   if (FABSF(x - y) < 1e-8 && FABSF(x - z) < 1e-8)
+   if (fabsf(x - y) < 1e-8F && fabsf(x - z) < 1e-8F)
       mat->flags |= MAT_FLAG_UNIFORM_SCALE;
    else
       mat->flags |= MAT_FLAG_GENERAL_SCALE;
@@ -1110,8 +1138,8 @@ _math_matrix_translate( GLmatrix *mat, GLfloat x, GLfloat y, GLfloat z )
  * Transforms Normalized Device Coords to window/Z values.
  */
 void
-_math_matrix_viewport(GLmatrix *m, const double scale[3],
-                      const double translate[3], double depthMax)
+_math_matrix_viewport(GLmatrix *m, const float scale[3],
+                      const float translate[3], double depthMax)
 {
    m->m[MAT_SX] = scale[0];
    m->m[MAT_TX] = translate[0];
@@ -1135,8 +1163,11 @@ _math_matrix_viewport(GLmatrix *m, const double scale[3],
 void
 _math_matrix_set_identity( GLmatrix *mat )
 {
-   memcpy( mat->m, Identity, 16*sizeof(GLfloat) );
-   memcpy( mat->inv, Identity, 16*sizeof(GLfloat) );
+   STATIC_ASSERT(MATRIX_M == offsetof(GLmatrix, m));
+   STATIC_ASSERT(MATRIX_INV == offsetof(GLmatrix, inv));
+
+   memcpy( mat->m, Identity, sizeof(Identity) );
+   memcpy( mat->inv, Identity, sizeof(Identity) );
 
    mat->type = MATRIX_IDENTITY;
    mat->flags &= ~(MAT_DIRTY_FLAGS|
@@ -1192,10 +1223,10 @@ _math_matrix_set_identity( GLmatrix *mat )
 #define SQ(x) ((x)*(x))
 
 /**
- * Determine type and flags from scratch.  
+ * Determine type and flags from scratch.
  *
  * \param mat matrix.
- * 
+ *
  * This is expensive enough to only want to do it once.
  */
 static void analyse_from_scratch( GLmatrix *mat )
@@ -1205,7 +1236,7 @@ static void analyse_from_scratch( GLmatrix *mat )
    GLuint i;
 
    for (i = 0 ; i < 16 ; i++) {
-      if (m[i] == 0.0) mask |= (1<<i);
+      if (m[i] == 0.0F) mask |= (1<<i);
    }
 
    if (m[0] == 1.0F) mask |= (1<<16);
@@ -1239,12 +1270,12 @@ static void analyse_from_scratch( GLmatrix *mat )
       mat->type = MATRIX_2D;
 
       /* Check for scale */
-      if (SQ(mm-1) > SQ(1e-6) ||
-	  SQ(m4m4-1) > SQ(1e-6))
+      if (SQ(mm-1) > SQ(1e-6F) ||
+	  SQ(m4m4-1) > SQ(1e-6F))
 	 mat->flags |= MAT_FLAG_GENERAL_SCALE;
 
       /* Check for rotation */
-      if (SQ(mm4) > SQ(1e-6))
+      if (SQ(mm4) > SQ(1e-6F))
 	 mat->flags |= MAT_FLAG_GENERAL_3D;
       else
 	 mat->flags |= MAT_FLAG_ROTATION;
@@ -1254,9 +1285,9 @@ static void analyse_from_scratch( GLmatrix *mat )
       mat->type = MATRIX_3D_NO_ROT;
 
       /* Check for scale */
-      if (SQ(m[0]-m[5]) < SQ(1e-6) &&
-	  SQ(m[0]-m[10]) < SQ(1e-6)) {
-	 if (SQ(m[0]-1.0) > SQ(1e-6)) {
+      if (SQ(m[0]-m[5]) < SQ(1e-6F) &&
+	  SQ(m[0]-m[10]) < SQ(1e-6F)) {
+	 if (SQ(m[0]-1.0F) > SQ(1e-6F)) {
 	    mat->flags |= MAT_FLAG_UNIFORM_SCALE;
          }
       }
@@ -1274,8 +1305,8 @@ static void analyse_from_scratch( GLmatrix *mat )
       mat->type = MATRIX_3D;
 
       /* Check for scale */
-      if (SQ(c1-c2) < SQ(1e-6) && SQ(c1-c3) < SQ(1e-6)) {
-	 if (SQ(c1-1.0) > SQ(1e-6))
+      if (SQ(c1-c2) < SQ(1e-6F) && SQ(c1-c3) < SQ(1e-6F)) {
+	 if (SQ(c1-1.0F) > SQ(1e-6F))
 	    mat->flags |= MAT_FLAG_UNIFORM_SCALE;
 	 /* else no scale at all */
       }
@@ -1284,10 +1315,10 @@ static void analyse_from_scratch( GLmatrix *mat )
       }
 
       /* Check for rotation */
-      if (SQ(d1) < SQ(1e-6)) {
+      if (SQ(d1) < SQ(1e-6F)) {
 	 CROSS3( cp, m, m+4 );
 	 SUB_3V( cp, cp, (m+8) );
-	 if (LEN_SQUARED_3FV(cp) < SQ(1e-6))
+	 if (LEN_SQUARED_3FV(cp) < SQ(1e-6F))
 	    mat->flags |= MAT_FLAG_ROTATION;
 	 else
 	    mat->flags |= MAT_FLAG_GENERAL_3D;
@@ -1308,7 +1339,7 @@ static void analyse_from_scratch( GLmatrix *mat )
 
 /**
  * Analyze a matrix given that its flags are accurate.
- * 
+ *
  * This is the more common operation, hopefully.
  */
 static void analyse_from_flags( GLmatrix *mat )
@@ -1436,7 +1467,7 @@ _math_matrix_is_dirty( const GLmatrix *m )
 void
 _math_matrix_copy( GLmatrix *to, const GLmatrix *from )
 {
-   memcpy( to->m, from->m, sizeof(Identity) );
+   memcpy(to->m, from->m, 16 * sizeof(GLfloat));
    memcpy(to->inv, from->inv, 16 * sizeof(GLfloat));
    to->flags = from->flags;
    to->type = from->type;
@@ -1444,7 +1475,7 @@ _math_matrix_copy( GLmatrix *to, const GLmatrix *from )
 
 /**
  * Loads a matrix array into GLmatrix.
- * 
+ *
  * \param m matrix array.
  * \param mat matrix.
  *
@@ -1468,10 +1499,10 @@ _math_matrix_loadf( GLmatrix *mat, const GLfloat *m )
 void
 _math_matrix_ctr( GLmatrix *m )
 {
-   m->m = _mesa_align_malloc( 16 * sizeof(GLfloat), 16 );
+   m->m = align_malloc( 16 * sizeof(GLfloat), 16 );
    if (m->m)
       memcpy( m->m, Identity, sizeof(Identity) );
-   m->inv = _mesa_align_malloc( 16 * sizeof(GLfloat), 16 );
+   m->inv = align_malloc( 16 * sizeof(GLfloat), 16 );
    if (m->inv)
       memcpy( m->inv, Identity, sizeof(Identity) );
    m->type = MATRIX_IDENTITY;
@@ -1488,10 +1519,10 @@ _math_matrix_ctr( GLmatrix *m )
 void
 _math_matrix_dtr( GLmatrix *m )
 {
-   _mesa_align_free( m->m );
+   align_free( m->m );
    m->m = NULL;
 
-   _mesa_align_free( m->inv );
+   align_free( m->inv );
    m->inv = NULL;
 }
 

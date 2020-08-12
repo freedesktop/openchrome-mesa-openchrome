@@ -30,7 +30,6 @@
  */
 
 #include "main/glheader.h"
-#include "main/imports.h"
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/mipmap.h"
@@ -41,7 +40,7 @@
 #include "main/texobj.h"
 #include "drivers/common/meta.h"
 
-#include "xmlpool.h"		/* for symbolic values of enum-type options */
+#include "util/driconf.h"		/* for symbolic values of enum-type options */
 
 #include "radeon_common.h"
 
@@ -113,7 +112,7 @@ radeonAllocTextureImageBuffer(struct gl_context *ctx,
 		return GL_FALSE;
 
 	teximage_assign_miptree(rmesa, texobj, timage);
-				
+
 	return GL_TRUE;
 }
 
@@ -182,7 +181,7 @@ radeon_map_texture_image(struct gl_context *ctx,
 	} else if (likely(mt)) {
 		void *base;
 		radeon_mipmap_level *lvl = &image->mt->levels[texImage->Level];
-		       
+
 		radeon_bo_map(mt->bo, write);
 		base = mt->bo->ptr + lvl->faces[image->base.Base.Face].offset;
 
@@ -224,7 +223,19 @@ static mesa_format radeonChoose8888TexFormat(radeonContextPtr rmesa,
 	const GLuint ui = 1;
 	const GLubyte littleEndian = *((const GLubyte *)&ui);
 
-	if (fbo)
+
+	/* Unfortunately, regardless the fbo flag, we might still be asked to
+	 * attach a texture to a fbo later, which then won't succeed if we chose
+	 * one which isn't renderable. And unlike more exotic formats, apps aren't
+	 * really prepared for the incomplete framebuffer this results in (they'd
+	 * have to retry with same internalFormat even, just different
+	 * srcFormat/srcType, which can't really be expected anyway).
+	 * Ideally, we'd defer format selection until later (if the texture is
+	 * used as a rt it's likely there's never data uploaded to it before attached
+	 * to a fbo), but this isn't really possible, so for now just always use
+	 * a renderable format.
+	 */
+	if (1 || fbo)
 		return _radeon_texformat_argb8888;
 
 	if ((srcFormat == GL_RGBA && srcType == GL_UNSIGNED_INT_8_8_8_8) ||
@@ -267,8 +278,8 @@ mesa_format radeonChooseTextureFormat(struct gl_context * ctx,
 	radeon_print(RADEON_TEXTURE, RADEON_TRACE,
 		"%s InternalFormat=%s(%d) type=%s format=%s\n",
 		__func__,
-		_mesa_lookup_enum_by_nr(internalFormat), internalFormat,
-		_mesa_lookup_enum_by_nr(type), _mesa_lookup_enum_by_nr(format));
+		_mesa_enum_to_string(internalFormat), internalFormat,
+		_mesa_enum_to_string(type), _mesa_enum_to_string(format));
 	radeon_print(RADEON_TEXTURE, RADEON_TRACE,
 			"%s do32bpt=%d force16bpt=%d\n",
 			__func__, do32bpt, force16bpt);
@@ -347,7 +358,7 @@ mesa_format radeonChooseTextureFormat(struct gl_context * ctx,
 #if defined(RADEON_R200)
 		/* r200: can't use a8 format since interpreting hw I8 as a8 would result
 		   in wrong rgb values (same as alpha value instead of 0). */
-		return _radeon_texformat_al88;
+		return MESA_FORMAT_LA_UNORM8;
 #else
 		return MESA_FORMAT_A_UNORM8;
 #endif
@@ -369,7 +380,7 @@ mesa_format radeonChooseTextureFormat(struct gl_context * ctx,
 	case GL_LUMINANCE12_ALPHA12:
 	case GL_LUMINANCE16_ALPHA16:
 	case GL_COMPRESSED_LUMINANCE_ALPHA:
-		return _radeon_texformat_al88;
+		return MESA_FORMAT_LA_UNORM8;
 
 	case GL_INTENSITY:
 	case GL_INTENSITY4:
@@ -452,7 +463,7 @@ mesa_format radeonChooseTextureFormat(struct gl_context * ctx,
 	case GL_SLUMINANCE_ALPHA:
 	case GL_SLUMINANCE8_ALPHA8:
 	case GL_COMPRESSED_SLUMINANCE_ALPHA:
-      return MESA_FORMAT_L8A8_SRGB;
+      return MESA_FORMAT_LA_SRGB8;
 
 	case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT:
 		return MESA_FORMAT_SRGB_DXT1;
@@ -492,7 +503,7 @@ static void teximage_assign_miptree(radeonContextPtr rmesa,
 		radeon_print(RADEON_TEXTURE, RADEON_NORMAL,
 			     "%s: texObj %p, texImage %p, "
 				"texObj miptree doesn't match, allocated new miptree %p\n",
-				__FUNCTION__, texObj, texImage, t->mt);
+				__func__, texObj, texImage, t->mt);
 	}
 
 	/* Miptree alocation may have failed,
@@ -531,7 +542,7 @@ void radeon_image_target_texture_2d(struct gl_context *ctx, GLenum target,
 	__DRIscreen *screen;
 	__DRIimage *image;
 
-	screen = radeon->dri.screen;
+	screen = radeon->radeonScreen->driScreen;
 	image = screen->dri2.image->lookupEGLImage(screen, image_handle,
 						   screen->loaderPrivate);
 	if (image == NULL)
@@ -584,29 +595,25 @@ mesa_format _radeon_texformat_argb8888 = MESA_FORMAT_NONE;
 mesa_format _radeon_texformat_rgb565 = MESA_FORMAT_NONE;
 mesa_format _radeon_texformat_argb4444 = MESA_FORMAT_NONE;
 mesa_format _radeon_texformat_argb1555 = MESA_FORMAT_NONE;
-mesa_format _radeon_texformat_al88 = MESA_FORMAT_NONE;
 /*@}*/
 
 
 static void
 radeonInitTextureFormats(void)
 {
-   if (_mesa_little_endian()) {
-      _radeon_texformat_rgba8888	= MESA_FORMAT_A8B8G8R8_UNORM;
-      _radeon_texformat_argb8888	= MESA_FORMAT_B8G8R8A8_UNORM;
-      _radeon_texformat_rgb565		= MESA_FORMAT_B5G6R5_UNORM;
-      _radeon_texformat_argb4444	= MESA_FORMAT_B4G4R4A4_UNORM;
-      _radeon_texformat_argb1555	= MESA_FORMAT_B5G5R5A1_UNORM;
-      _radeon_texformat_al88		= MESA_FORMAT_L8A8_UNORM;
-   }
-   else {
-      _radeon_texformat_rgba8888	= MESA_FORMAT_R8G8B8A8_UNORM;
-      _radeon_texformat_argb8888	= MESA_FORMAT_A8R8G8B8_UNORM;
-      _radeon_texformat_rgb565		= MESA_FORMAT_R5G6B5_UNORM;
-      _radeon_texformat_argb4444	= MESA_FORMAT_A4R4G4B4_UNORM;
-      _radeon_texformat_argb1555	= MESA_FORMAT_A1R5G5B5_UNORM;
-      _radeon_texformat_al88		= MESA_FORMAT_A8L8_UNORM;
-   }
+#if UTIL_ARCH_LITTLE_ENDIAN
+   _radeon_texformat_rgba8888	= MESA_FORMAT_A8B8G8R8_UNORM;
+   _radeon_texformat_argb8888	= MESA_FORMAT_B8G8R8A8_UNORM;
+   _radeon_texformat_rgb565	= MESA_FORMAT_B5G6R5_UNORM;
+   _radeon_texformat_argb4444	= MESA_FORMAT_B4G4R4A4_UNORM;
+   _radeon_texformat_argb1555	= MESA_FORMAT_B5G5R5A1_UNORM;
+#else
+   _radeon_texformat_rgba8888	= MESA_FORMAT_R8G8B8A8_UNORM;
+   _radeon_texformat_argb8888	= MESA_FORMAT_A8R8G8B8_UNORM;
+   _radeon_texformat_rgb565	= MESA_FORMAT_R5G6B5_UNORM;
+   _radeon_texformat_argb4444	= MESA_FORMAT_A4R4G4B4_UNORM;
+   _radeon_texformat_argb1555	= MESA_FORMAT_A1R5G5B5_UNORM;
+#endif
 }
 
 void
@@ -673,12 +680,12 @@ static radeon_mipmap_tree *radeon_miptree_create_for_teximage(radeonContextPtr r
 		    texImage->Level == firstLevel) {
 			lastLevel = firstLevel;
 		} else {
-			lastLevel = firstLevel + _mesa_logbase2(MAX2(MAX2(width, height), depth));
+			lastLevel = firstLevel + util_logbase2(MAX2(MAX2(width, height), depth));
 		}
 	}
 
 	return  radeon_miptree_create(rmesa, texObj->Target,
 				      texImage->TexFormat, firstLevel, lastLevel - firstLevel + 1,
-				      width, height, depth, 
+				      width, height, depth,
 				      t->tile_bits);
-}				     
+}

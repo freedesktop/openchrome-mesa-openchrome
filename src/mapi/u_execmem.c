@@ -32,8 +32,8 @@
  */
 
 
-#include "u_compiler.h"
-#include "u_thread.h"
+#include "c99_compat.h"
+#include "c11/threads.h"
 #include "u_execmem.h"
 
 
@@ -46,7 +46,7 @@ static unsigned int head = 0;
 static unsigned char *exec_mem = (unsigned char *)0;
 
 
-#if defined(__linux__) || defined(__OpenBSD__) || defined(_NetBSD__) || defined(__sun) || defined(__HAIKU__)
+#if defined(__linux__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__sun) || defined(__HAIKU__)
 
 #include <unistd.h>
 #include <sys/mman.h>

@@ -510,7 +510,7 @@ void x86_mov8_imm( struct x86_function *p, struct x86_reg dst, uint8_t imm )
 /**
  * Immediate group 1 instructions.
  */
-static INLINE void 
+static inline void 
 x86_group1_imm( struct x86_function *p, 
                 unsigned op, struct x86_reg dst, int imm )
 {
@@ -2165,6 +2165,11 @@ static void x86_init_func_common( struct x86_function *p )
    if(util_cpu_caps.has_sse4_1)
       p->caps |= X86_SSE4_1;
    p->csr = p->store;
+#if defined(PIPE_ARCH_X86)
+   emit_1i(p, 0xfb1e0ff3);
+#else
+   emit_1i(p, 0xfa1e0ff3);
+#endif
    DUMP_START();
 }
 
@@ -2196,14 +2201,14 @@ void x86_release_func( struct x86_function *p )
 }
 
 
-static INLINE x86_func
+static inline x86_func
 voidptr_to_x86_func(void *v)
 {
    union {
       void *v;
       x86_func f;
    } u;
-   assert(sizeof(u.v) == sizeof(u.f));
+   STATIC_ASSERT(sizeof(u.v) == sizeof(u.f));
    u.v = v;
    return u.f;
 }

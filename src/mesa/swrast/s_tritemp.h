@@ -90,6 +90,12 @@
  * SUB_PIXEL_BITS.
  */
 
+#include "util/u_math.h"
+
+#ifndef MAX_GLUINT
+#define MAX_GLUINT	0xffffffffu
+#endif
+
 
 /*
  * Some code we unfortunately need to prevent negative interpolated colors.
@@ -151,7 +157,7 @@ static void NAME(struct gl_context *ctx, const SWvertex *v0,
 #endif
 
    /*
-   printf("%s()\n", __FUNCTION__);
+   printf("%s()\n", __func__);
    printf("  %g, %g, %g\n",
           v0->attrib[VARYING_SLOT_POS][0],
           v0->attrib[VARYING_SLOT_POS][1],
@@ -234,10 +240,10 @@ static void NAME(struct gl_context *ctx, const SWvertex *v0,
    {
       const GLfloat area = eMaj.dx * eBot.dy - eBot.dx * eMaj.dy;
 
-      if (IS_INF_OR_NAN(area) || area == 0.0F)
+      if (util_is_inf_or_nan(area) || area == 0.0F)
          return;
 
-      if (area * bf * swrast->_BackfaceCullSign < 0.0)
+      if (area * bf * swrast->_BackfaceCullSign < 0.0F)
          return;
 
       oneOverArea = 1.0F / area;
@@ -380,7 +386,7 @@ static void NAME(struct gl_context *ctx, const SWvertex *v0,
 #  endif /* INTERP_ALPHA */
       }
       else {
-         ASSERT(ctx->Light.ShadeModel == GL_FLAT);
+         assert(ctx->Light.ShadeModel == GL_FLAT);
          span.interpMask |= SPAN_FLAT;
          span.attrStepX[VARYING_SLOT_COL0][0] = span.attrStepY[VARYING_SLOT_COL0][0] = 0.0F;
          span.attrStepX[VARYING_SLOT_COL0][1] = span.attrStepY[VARYING_SLOT_COL0][1] = 0.0F;
@@ -662,7 +668,7 @@ static void NAME(struct gl_context *ctx, const SWvertex *v0,
 #  endif
                }
                else {
-                  ASSERT(ctx->Light.ShadeModel == GL_FLAT);
+                  assert(ctx->Light.ShadeModel == GL_FLAT);
                   rLeft = ChanToFixed(v2->color[RCOMP]);
                   gLeft = ChanToFixed(v2->color[GCOMP]);
                   bLeft = ChanToFixed(v2->color[BCOMP]);

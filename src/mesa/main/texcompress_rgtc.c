@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2011 Red Hat Inc.
- * 
+ *
  * block compression parts are:
  * Copyright (C) 2004  Roland Scheidegger   All Rights Reserved.
  *
@@ -32,10 +32,11 @@
  * GL_EXT_texture_compression_rgtc support.
  */
 
+#include <stdlib.h>
 
+#include "config.h"
 #include "glheader.h"
-#include "imports.h"
-#include "colormac.h"
+
 #include "image.h"
 #include "macros.h"
 #include "mipmap.h"
@@ -83,18 +84,24 @@ _mesa_texstore_red_rgtc1(TEXSTORE_PARAMS)
    const GLubyte *srcaddr;
    GLubyte srcpixels[4][4];
    GLubyte *blkaddr;
-   GLint dstRowDiff;
-   ASSERT(dstFormat == MESA_FORMAT_R_RGTC1_UNORM ||
+   GLint dstRowDiff, redRowStride;
+   GLubyte *tempImageSlices[1];
+
+   assert(dstFormat == MESA_FORMAT_R_RGTC1_UNORM ||
           dstFormat == MESA_FORMAT_L_LATC1_UNORM);
 
-   tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-					  baseInternalFormat,
-					  _mesa_get_format_base_format(dstFormat),
-					  srcWidth, srcHeight, srcDepth,
-					  srcFormat, srcType, srcAddr,
-					  srcPacking);
+   tempImage = malloc(srcWidth * srcHeight * 1 * sizeof(GLubyte));
    if (!tempImage)
       return GL_FALSE; /* out of memory */
+   redRowStride = 1 * srcWidth * sizeof(GLubyte);
+   tempImageSlices[0] = (GLubyte *) tempImage;
+   _mesa_texstore(ctx, dims,
+                  baseInternalFormat,
+                  MESA_FORMAT_R_UNORM8,
+                  redRowStride, tempImageSlices,
+                  srcWidth, srcHeight, srcDepth,
+                  srcFormat, srcType, srcAddr,
+                  srcPacking);
 
    dst = dstSlices[0];
 
@@ -130,18 +137,24 @@ _mesa_texstore_signed_red_rgtc1(TEXSTORE_PARAMS)
    const GLfloat *srcaddr;
    GLbyte srcpixels[4][4];
    GLbyte *blkaddr;
-   GLint dstRowDiff;
-   ASSERT(dstFormat == MESA_FORMAT_R_RGTC1_SNORM ||
+   GLint dstRowDiff, redRowStride;
+   GLfloat *tempImageSlices[1];
+
+   assert(dstFormat == MESA_FORMAT_R_RGTC1_SNORM ||
           dstFormat == MESA_FORMAT_L_LATC1_SNORM);
 
-   tempImage = _mesa_make_temp_float_image(ctx, dims,
-					   baseInternalFormat,
-					   _mesa_get_format_base_format(dstFormat),
-					   srcWidth, srcHeight, srcDepth,
-					   srcFormat, srcType, srcAddr,
-					   srcPacking, 0x0);
+   redRowStride = 1 * srcWidth * sizeof(GLfloat);
+   tempImage = malloc(srcWidth * srcHeight * 1 * sizeof(GLfloat));
    if (!tempImage)
       return GL_FALSE; /* out of memory */
+   tempImageSlices[0] = (GLfloat *) tempImage;
+   _mesa_texstore(ctx, dims,
+                  baseInternalFormat,
+                  MESA_FORMAT_R_FLOAT32,
+                  redRowStride, (GLubyte **)tempImageSlices,
+                  srcWidth, srcHeight, srcDepth,
+                  srcFormat, srcType, srcAddr,
+                  srcPacking);
 
    dst = (GLbyte *) dstSlices[0];
 
@@ -177,19 +190,30 @@ _mesa_texstore_rg_rgtc2(TEXSTORE_PARAMS)
    const GLubyte *srcaddr;
    GLubyte srcpixels[4][4];
    GLubyte *blkaddr;
-   GLint dstRowDiff;
+   GLint dstRowDiff, rgRowStride;
+   mesa_format tempFormat;
+   GLubyte *tempImageSlices[1];
 
-   ASSERT(dstFormat == MESA_FORMAT_RG_RGTC2_UNORM ||
+   assert(dstFormat == MESA_FORMAT_RG_RGTC2_UNORM ||
           dstFormat == MESA_FORMAT_LA_LATC2_UNORM);
 
-   tempImage = _mesa_make_temp_ubyte_image(ctx, dims,
-					  baseInternalFormat,
-					  _mesa_get_format_base_format(dstFormat),
-					  srcWidth, srcHeight, srcDepth,
-					  srcFormat, srcType, srcAddr,
-					  srcPacking);
+   if (baseInternalFormat == GL_RG)
+      tempFormat = MESA_FORMAT_RG_UNORM8;
+   else
+      tempFormat = MESA_FORMAT_LA_UNORM8;
+
+   rgRowStride = 2 * srcWidth * sizeof(GLubyte);
+   tempImage = malloc(srcWidth * srcHeight * 2 * sizeof(GLubyte));
    if (!tempImage)
       return GL_FALSE; /* out of memory */
+   tempImageSlices[0] = (GLubyte *) tempImage;
+   _mesa_texstore(ctx, dims,
+                  baseInternalFormat,
+                  tempFormat,
+                  rgRowStride, tempImageSlices,
+                  srcWidth, srcHeight, srcDepth,
+                  srcFormat, srcType, srcAddr,
+                  srcPacking);
 
    dst = dstSlices[0];
 
@@ -231,19 +255,30 @@ _mesa_texstore_signed_rg_rgtc2(TEXSTORE_PARAMS)
    const GLfloat *srcaddr;
    GLbyte srcpixels[4][4];
    GLbyte *blkaddr;
-   GLint dstRowDiff;
+   GLint dstRowDiff, rgRowStride;
+   mesa_format tempFormat;
+   GLfloat *tempImageSlices[1];
 
-   ASSERT(dstFormat == MESA_FORMAT_RG_RGTC2_SNORM ||
+   assert(dstFormat == MESA_FORMAT_RG_RGTC2_SNORM ||
           dstFormat == MESA_FORMAT_LA_LATC2_SNORM);
 
-   tempImage = _mesa_make_temp_float_image(ctx, dims,
-					   baseInternalFormat,
-					   _mesa_get_format_base_format(dstFormat),
-					   srcWidth, srcHeight, srcDepth,
-					   srcFormat, srcType, srcAddr,
-					   srcPacking, 0x0);
+   if (baseInternalFormat == GL_RG)
+      tempFormat = MESA_FORMAT_RG_FLOAT32;
+   else
+      tempFormat = MESA_FORMAT_LA_FLOAT32;
+
+   rgRowStride = 2 * srcWidth * sizeof(GLfloat);
+   tempImage = malloc(srcWidth * srcHeight * 2 * sizeof(GLfloat));
    if (!tempImage)
       return GL_FALSE; /* out of memory */
+   tempImageSlices[0] = (GLfloat *) tempImage;
+   _mesa_texstore(ctx, dims,
+                  baseInternalFormat,
+                  tempFormat,
+                  rgRowStride, (GLubyte **)tempImageSlices,
+                  srcWidth, srcHeight, srcDepth,
+                  srcFormat, srcType, srcAddr,
+                  srcPacking);
 
    dst = (GLbyte *) dstSlices[0];
 

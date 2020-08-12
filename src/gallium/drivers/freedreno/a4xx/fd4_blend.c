@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
  *
@@ -27,6 +25,7 @@
  */
 
 #include "pipe/p_state.h"
+#include "util/u_blend.h"
 #include "util/u_string.h"
 #include "util/u_memory.h"
 
@@ -34,7 +33,7 @@
 #include "fd4_context.h"
 #include "fd4_format.h"
 
-static enum a4xx_rb_blend_opcode
+static enum a3xx_rb_blend_opcode
 blend_func(unsigned func)
 {
 	switch (func) {
@@ -59,34 +58,13 @@ fd4_blend_state_create(struct pipe_context *pctx,
 		const struct pipe_blend_state *cso)
 {
 	struct fd4_blend_stateobj *so;
-//	enum a3xx_rop_code rop = ROP_COPY;
+	enum a3xx_rop_code rop = ROP_COPY;
 	bool reads_dest = false;
-	int i;
+	unsigned i, mrt_blend = 0;
 
 	if (cso->logicop_enable) {
-//		rop = cso->logicop_func;  /* maps 1:1 */
-
-		switch (cso->logicop_func) {
-		case PIPE_LOGICOP_NOR:
-		case PIPE_LOGICOP_AND_INVERTED:
-		case PIPE_LOGICOP_AND_REVERSE:
-		case PIPE_LOGICOP_INVERT:
-		case PIPE_LOGICOP_XOR:
-		case PIPE_LOGICOP_NAND:
-		case PIPE_LOGICOP_AND:
-		case PIPE_LOGICOP_EQUIV:
-		case PIPE_LOGICOP_NOOP:
-		case PIPE_LOGICOP_OR_INVERTED:
-		case PIPE_LOGICOP_OR_REVERSE:
-		case PIPE_LOGICOP_OR:
-			reads_dest = true;
-			break;
-		}
-	}
-
-	if (cso->independent_blend_enable) {
-		DBG("Unsupported! independent blend state");
-		return NULL;
+		rop = cso->logicop_func;  /* maps 1:1 */
+		reads_dest = util_logicop_reads_dest(cso->logicop_func);
 	}
 
 	so = CALLOC_STRUCT(fd4_blend_stateobj);
@@ -96,7 +74,12 @@ fd4_blend_state_create(struct pipe_context *pctx,
 	so->base = *cso;
 
 	for (i = 0; i < ARRAY_SIZE(so->rb_mrt); i++) {
-		const struct pipe_rt_blend_state *rt = &cso->rt[i];
+		const struct pipe_rt_blend_state *rt;
+
+		if (cso->independent_blend_enable)
+			rt = &cso->rt[i];
+		else
+			rt = &cso->rt[0];
 
 		so->rb_mrt[i].blend_control =
 				A4XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(fd_blend_factor(rt->rgb_src_factor)) |
@@ -107,7 +90,8 @@ fd4_blend_state_create(struct pipe_context *pctx,
 				A4XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(fd_blend_factor(rt->alpha_dst_factor));
 
 		so->rb_mrt[i].control =
-				0xc00 | /* XXX ROP_CODE ?? */
+				A4XX_RB_MRT_CONTROL_ROP_CODE(rop) |
+				COND(cso->logicop_enable, A4XX_RB_MRT_CONTROL_ROP_ENABLE) |
 				A4XX_RB_MRT_CONTROL_COMPONENT_ENABLE(rt->colormask);
 
 		if (rt->blend_enable) {
@@ -115,15 +99,20 @@ fd4_blend_state_create(struct pipe_context *pctx,
 					A4XX_RB_MRT_CONTROL_READ_DEST_ENABLE |
 					A4XX_RB_MRT_CONTROL_BLEND |
 					A4XX_RB_MRT_CONTROL_BLEND2;
-			so->rb_fs_output |= A4XX_RB_FS_OUTPUT_ENABLE_BLEND;
+			mrt_blend |= (1 << i);
 		}
 
-		if (reads_dest)
+		if (reads_dest) {
 			so->rb_mrt[i].control |= A4XX_RB_MRT_CONTROL_READ_DEST_ENABLE;
+			mrt_blend |= (1 << i);
+		}
 
 		if (cso->dither)
 			so->rb_mrt[i].buf_info |= A4XX_RB_MRT_BUF_INFO_DITHER_MODE(DITHER_ALWAYS);
 	}
+
+	so->rb_fs_output = A4XX_RB_FS_OUTPUT_ENABLE_BLEND(mrt_blend) |
+		COND(cso->independent_blend_enable, A4XX_RB_FS_OUTPUT_INDEPENDENT_BLEND);
 
 	return so;
 }

@@ -35,19 +35,20 @@
 #define U_RANGE_H
 
 #include "os/os_thread.h"
-
+#include "pipe/p_state.h"
 #include "util/u_math.h"
+#include "util/simple_mtx.h"
 
 struct util_range {
    unsigned start; /* inclusive */
    unsigned end; /* exclusive */
 
    /* for the range to be consistent with multiple contexts: */
-   pipe_mutex write_mutex;
+   simple_mtx_t write_mutex;
 };
 
 
-static INLINE void
+static inline void
 util_range_set_empty(struct util_range *range)
 {
    range->start = ~0;
@@ -55,19 +56,26 @@ util_range_set_empty(struct util_range *range)
 }
 
 /* This is like a union of two sets. */
-static INLINE void
-util_range_add(struct util_range *range, unsigned start, unsigned end)
+static inline void
+util_range_add(struct pipe_resource *resource, struct util_range *range,
+               unsigned start, unsigned end)
 {
    if (start < range->start || end > range->end) {
-      pipe_mutex_lock(range->write_mutex);
-      range->start = MIN2(start, range->start);
-      range->end = MAX2(end, range->end);
-      pipe_mutex_unlock(range->write_mutex);
+      if (resource->flags & PIPE_RESOURCE_FLAG_SINGLE_THREAD_USE) {
+         range->start = MIN2(start, range->start);
+         range->end = MAX2(end, range->end);
+      } else {
+         simple_mtx_lock(&range->write_mutex);
+         range->start = MIN2(start, range->start);
+         range->end = MAX2(end, range->end);
+         simple_mtx_unlock(&range->write_mutex);
+      }
    }
 }
 
-static INLINE boolean
-util_ranges_intersect(struct util_range *range, unsigned start, unsigned end)
+static inline boolean
+util_ranges_intersect(const struct util_range *range,
+                      unsigned start, unsigned end)
 {
    return MAX2(start, range->start) < MIN2(end, range->end);
 }
@@ -75,17 +83,17 @@ util_ranges_intersect(struct util_range *range, unsigned start, unsigned end)
 
 /* Init/deinit */
 
-static INLINE void
+static inline void
 util_range_init(struct util_range *range)
 {
-   pipe_mutex_init(range->write_mutex);
+   (void) simple_mtx_init(&range->write_mutex, mtx_plain);
    util_range_set_empty(range);
 }
 
-static INLINE void
+static inline void
 util_range_destroy(struct util_range *range)
 {
-   pipe_mutex_destroy(range->write_mutex);
+   simple_mtx_destroy(&range->write_mutex);
 }
 
 #endif

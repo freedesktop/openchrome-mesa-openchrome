@@ -22,16 +22,14 @@
  */
 
 #include <gtest/gtest.h>
-#include "../mesa/main/glheader.h"
+#include "main/glheader.h"
 
-extern "C" {
 #include "glapi/glapi.h"
-#include "glapi/glapitable.h"
-}
+#include "glapitable.h"
 
 struct name_offset {
    const char *name;
-   int offset;
+   unsigned int offset;
 };
 
 extern const struct name_offset linux_gl_abi[];
@@ -1137,7 +1135,6 @@ const struct name_offset known_dispatch[] = {
    { "glDrawElementsInstancedARB", _O(DrawElementsInstancedARB) },
    { "glRenderbufferStorageMultisample", _O(RenderbufferStorageMultisample) },
    { "glFramebufferTexture", _O(FramebufferTexture) },
-   { "glFramebufferTextureFaceARB", _O(FramebufferTextureFaceARB) },
    { "glProgramParameteri", _O(ProgramParameteri) },
    { "glVertexAttribDivisor", _O(VertexAttribDivisor) },
    { "glFlushMappedBufferRange", _O(FlushMappedBufferRange) },
@@ -1263,7 +1260,6 @@ const struct name_offset known_dispatch[] = {
    { "glTextureStorage1DEXT", _O(TextureStorage1DEXT) },
    { "glTextureStorage2DEXT", _O(TextureStorage2DEXT) },
    { "glTextureStorage3DEXT", _O(TextureStorage3DEXT) },
-   { "glPolygonOffsetEXT", _O(PolygonOffsetEXT) },
    { "glSampleMaskSGIS", _O(SampleMaskSGIS) },
    { "glSamplePatternSGIS", _O(SamplePatternSGIS) },
    { "glColorPointerEXT", _O(ColorPointerEXT) },
@@ -1405,9 +1401,7 @@ const struct name_offset known_dispatch[] = {
    { "glPointParameteri", _O(PointParameteri) },
    { "glPointParameteriv", _O(PointParameteriv) },
    { "glActiveStencilFaceEXT", _O(ActiveStencilFaceEXT) },
-   { "glBindVertexArrayAPPLE", _O(BindVertexArrayAPPLE) },
    { "glDeleteVertexArrays", _O(DeleteVertexArrays) },
-   { "glGenVertexArraysAPPLE", _O(GenVertexArraysAPPLE) },
    { "glIsVertexArray", _O(IsVertexArray) },
    { "glGetProgramNamedParameterdvNV", _O(GetProgramNamedParameterdvNV) },
    { "glGetProgramNamedParameterfvNV", _O(GetProgramNamedParameterfvNV) },

@@ -47,7 +47,7 @@ llvmpipe_create_gs_state(struct pipe_context *pipe,
    struct lp_geometry_shader *state;
 
    state = CALLOC_STRUCT(lp_geometry_shader);
-   if (state == NULL )
+   if (!state)
       goto no_state;
 
    /* debug */
@@ -57,10 +57,13 @@ llvmpipe_create_gs_state(struct pipe_context *pipe,
    }
 
    /* copy stream output info */
-   state->no_tokens = !templ->tokens;
+   if (templ->type == PIPE_SHADER_IR_TGSI)
+      state->no_tokens = !templ->tokens;
+   else
+      state->no_tokens = FALSE;
    memcpy(&state->stream_output, &templ->stream_output, sizeof state->stream_output);
 
-   if (templ->tokens) {
+   if (templ->tokens || templ->type == PIPE_SHADER_IR_NIR) {
       state->dgs = draw_create_geometry_shader(llvmpipe->draw, templ);
       if (state->dgs == NULL) {
          goto no_dgs;

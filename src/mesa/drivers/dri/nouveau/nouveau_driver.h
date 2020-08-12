@@ -27,7 +27,7 @@
 #ifndef __NOUVEAU_DRIVER_H__
 #define __NOUVEAU_DRIVER_H__
 
-#include "main/imports.h"
+
 #include "main/mtypes.h"
 #include "main/macros.h"
 #include "main/formats.h"
@@ -69,7 +69,7 @@ struct nouveau_driver {
 #define nouveau_error(format, ...) \
 	fprintf(stderr, "%s: " format, __func__, ## __VA_ARGS__)
 
-extern const char const *nouveau_vendor_string;
+extern const char * const nouveau_vendor_string;
 
 const char *
 nouveau_get_renderer_string(unsigned chipset);

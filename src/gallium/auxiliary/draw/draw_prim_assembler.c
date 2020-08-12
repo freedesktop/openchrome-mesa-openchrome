@@ -29,7 +29,7 @@
 
 #include "draw_fs.h"
 #include "draw_gs.h"
-
+#include "draw_tess.h"
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/u_prim.h"
@@ -59,8 +59,14 @@ needs_primid(const struct draw_context *draw)
 {
    const struct draw_fragment_shader *fs = draw->fs.fragment_shader;
    const struct draw_geometry_shader *gs = draw->gs.geometry_shader;
+   const struct draw_tess_eval_shader *tes = draw->tes.tess_eval_shader;
    if (fs && fs->info.uses_primid) {
-      return !gs || !gs->info.uses_primid;
+      if (gs)
+         return !gs->info.uses_primid;
+      else if (tes)
+         return !tes->info.uses_primid;
+      else
+         return TRUE;
    }
    return FALSE;
 }
@@ -70,6 +76,9 @@ draw_prim_assembler_is_required(const struct draw_context *draw,
                                 const struct draw_prim_info *prim_info,
                                 const struct draw_vertex_info *vert_info)
 {
+   /* viewport index requires primitive boundaries to get correct vertex */
+   if (draw_current_shader_uses_viewport_index(draw))
+      return TRUE;
    switch (prim_info->prim) {
    case PIPE_PRIM_LINES_ADJACENCY:
    case PIPE_PRIM_LINE_STRIP_ADJACENCY:
@@ -189,7 +198,6 @@ draw_prim_assembler_prepare_outputs(struct draw_assembler *ia)
    } else {
       ia->primid_slot = -1;
    }
-   ia->primid = 0;
 }
 
 
@@ -233,7 +241,6 @@ draw_prim_assembler_run(struct draw_context *draw,
    asmblr->input_prims = input_prims;
    asmblr->input_verts = input_verts;
    asmblr->needs_primid = needs_primid(asmblr->draw);
-   asmblr->primid = 0;
    asmblr->num_prims = 0;
 
    output_prims->linear = TRUE;
@@ -283,4 +290,15 @@ void
 draw_prim_assembler_destroy(struct draw_assembler *ia)
 {
    FREE(ia);
+}
+
+
+/*
+ * Called at the very begin of the draw call with a new instance
+ * Used to reset state that should persist between primitive restart.
+ */
+void
+draw_prim_assembler_new_instance(struct draw_assembler *asmblr)
+{
+   asmblr->primid = 0;
 }

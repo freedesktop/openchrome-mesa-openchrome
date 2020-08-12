@@ -64,7 +64,7 @@ llvmpipe_create_rasterizer_state(struct pipe_context *pipe,
     * handle, and what we'll look after ourselves.
     */
    struct lp_rast_state *state = MALLOC_STRUCT(lp_rast_state);
-   if (state == NULL)
+   if (!state)
       return NULL;
 
    memcpy(&state->draw_state, rast, sizeof *rast);
@@ -116,7 +116,8 @@ llvmpipe_bind_rasterizer_state(struct pipe_context *pipe, void *handle)
                                   state->lp_state.front_ccw,
                                   state->lp_state.scissor,
                                   state->lp_state.half_pixel_center,
-                                  state->lp_state.bottom_edge_rule);
+                                  state->lp_state.bottom_edge_rule,
+                                  state->lp_state.multisample);
       lp_setup_set_flatshade_first( llvmpipe->setup,
 				    state->lp_state.flatshade_first);
       lp_setup_set_line_state( llvmpipe->setup,

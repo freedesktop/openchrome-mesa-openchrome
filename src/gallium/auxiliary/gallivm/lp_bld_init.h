@@ -35,18 +35,28 @@
 #include "lp_bld.h"
 #include <llvm-c/ExecutionEngine.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
+struct lp_cached_code;
 struct gallivm_state
 {
+   char *module_name;
    LLVMModuleRef module;
    LLVMExecutionEngineRef engine;
    LLVMTargetDataRef target;
    LLVMPassManagerRef passmgr;
+   LLVMPassManagerRef cgpassmgr;
    LLVMContextRef context;
    LLVMBuilderRef builder;
    LLVMMCJITMemoryManagerRef memorymgr;
    struct lp_generated_code *code;
+   struct lp_cached_code *cache;
    unsigned compiled;
+   LLVMValueRef coro_malloc_hook;
+   LLVMValueRef coro_free_hook;
+   LLVMValueRef debug_printf_hook;
 };
 
 
@@ -55,7 +65,8 @@ lp_build_init(void);
 
 
 struct gallivm_state *
-gallivm_create(const char *name, LLVMContextRef context);
+gallivm_create(const char *name, LLVMContextRef context,
+               struct lp_cached_code *cache);
 
 void
 gallivm_destroy(struct gallivm_state *gallivm);
@@ -74,12 +85,8 @@ func_pointer
 gallivm_jit_function(struct gallivm_state *gallivm,
                      LLVMValueRef func);
 
-void
-lp_set_load_alignment(LLVMValueRef Inst,
-                       unsigned Align);
-
-void
-lp_set_store_alignment(LLVMValueRef Inst,
-		       unsigned Align);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* !LP_BLD_INIT_H */

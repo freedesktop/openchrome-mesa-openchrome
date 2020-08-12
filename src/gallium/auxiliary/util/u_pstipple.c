@@ -45,7 +45,7 @@
 #include "pipe/p_shader_tokens.h"
 #include "util/u_inlines.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_pstipple.h"
 #include "util/u_sampler.h"
@@ -55,15 +55,15 @@
 #include "tgsi/tgsi_scan.h"
 
 /** Approx number of new tokens for instructions in pstip_transform_inst() */
-#define NUM_NEW_TOKENS 50
+#define NUM_NEW_TOKENS 53
 
 
-static void
+void
 util_pstipple_update_stipple_texture(struct pipe_context *pipe,
                                      struct pipe_resource *tex,
                                      const uint32_t pattern[32])
 {
-   static const uint bit31 = 1 << 31;
+   static const uint bit31 = 1u << 31;
    struct pipe_transfer *transfer;
    ubyte *data;
    int i, j;
@@ -118,7 +118,7 @@ util_pstipple_create_stipple_texture(struct pipe_context *pipe,
 
    tex = screen->resource_create(screen, &templat);
 
-   if (tex)
+   if (tex && pattern)
       util_pstipple_update_stipple_texture(pipe, tex, pattern);
 
    return tex;
@@ -177,11 +177,14 @@ struct pstip_transform_context {
    struct tgsi_shader_info info;
    uint tempsUsed;  /**< bitmask */
    int wincoordInput;
+   unsigned wincoordFile;
    int maxInput;
    uint samplersUsed;  /**< bitfield of samplers used */
    int freeSampler;  /** an available sampler for the pstipple */
    int numImmed;
    uint coordOrigin;
+   unsigned fixedUnit;
+   bool hasFixedUnit;
 };
 
 
@@ -201,10 +204,10 @@ pstip_transform_decl(struct tgsi_transform_context *ctx,
    if (decl->Declaration.File == TGSI_FILE_SAMPLER) {
       uint i;
       for (i = decl->Range.First; i <= decl->Range.Last; i++) {
-         pctx->samplersUsed |= 1 << i;
+         pctx->samplersUsed |= 1u << i;
       }
    }
-   else if (decl->Declaration.File == TGSI_FILE_INPUT) {
+   else if (decl->Declaration.File == pctx->wincoordFile) {
       pctx->maxInput = MAX2(pctx->maxInput, (int) decl->Range.Last);
       if (decl->Semantic.Name == TGSI_SEMANTIC_POSITION)
          pctx->wincoordInput = (int) decl->Range.First;
@@ -227,6 +230,7 @@ pstip_transform_immed(struct tgsi_transform_context *ctx,
    struct pstip_transform_context *pctx =
       (struct pstip_transform_context *) ctx;
    pctx->numImmed++;
+   ctx->emit_immediate(ctx, immed);
 }
 
 
@@ -260,10 +264,13 @@ pstip_transform_prolog(struct tgsi_transform_context *ctx)
       (struct pstip_transform_context *) ctx;
    int wincoordInput;
    int texTemp;
+   int sampIdx;
+
+   STATIC_ASSERT(sizeof(pctx->samplersUsed) * 8 >= PIPE_MAX_SAMPLERS);
 
    /* find free texture sampler */
    pctx->freeSampler = free_bit(pctx->samplersUsed);
-   if (pctx->freeSampler >= PIPE_MAX_SAMPLERS)
+   if (pctx->freeSampler < 0 || pctx->freeSampler >= PIPE_MAX_SAMPLERS)
       pctx->freeSampler = PIPE_MAX_SAMPLERS - 1;
 
    if (pctx->wincoordInput < 0)
@@ -272,14 +279,39 @@ pstip_transform_prolog(struct tgsi_transform_context *ctx)
       wincoordInput = pctx->wincoordInput;
 
    if (pctx->wincoordInput < 0) {
+      struct tgsi_full_declaration decl;
+
+      decl = tgsi_default_full_declaration();
       /* declare new position input reg */
-      tgsi_transform_input_decl(ctx, wincoordInput,
-                                TGSI_SEMANTIC_POSITION, 1,
-                                TGSI_INTERPOLATE_LINEAR);
+      decl.Declaration.File = pctx->wincoordFile;
+      decl.Declaration.Semantic = 1;
+      decl.Semantic.Name = TGSI_SEMANTIC_POSITION;
+      decl.Range.First =
+      decl.Range.Last = wincoordInput;
+
+      if (pctx->wincoordFile == TGSI_FILE_INPUT) {
+         decl.Declaration.Interpolate = 1;
+         decl.Interp.Interpolate = TGSI_INTERPOLATE_LINEAR;
+      }
+
+      ctx->emit_declaration(ctx, &decl);
    }
 
+   sampIdx = pctx->hasFixedUnit ? (int)pctx->fixedUnit : pctx->freeSampler;
+
    /* declare new sampler */
-   tgsi_transform_sampler_decl(ctx, pctx->freeSampler);
+   tgsi_transform_sampler_decl(ctx, sampIdx);
+
+   /* if the src shader has SVIEW decl's for each SAMP decl, we
+    * need to continue the trend and ensure there is a matching
+    * SVIEW for the new SAMP we just created
+    */
+   if (pctx->info.file_max[TGSI_FILE_SAMPLER_VIEW] != -1) {
+      tgsi_transform_sampler_view_decl(ctx,
+                                       sampIdx,
+                                       TGSI_TEXTURE_2D,
+                                       TGSI_RETURN_TYPE_FLOAT);
+   }
 
    /* Declare temp[0] reg if not already declared.
     * We can always use temp[0] since this code is before
@@ -311,31 +343,39 @@ pstip_transform_prolog(struct tgsi_transform_context *ctx)
    tgsi_transform_op2_inst(ctx, TGSI_OPCODE_MUL,
                            TGSI_FILE_TEMPORARY, texTemp,
                            TGSI_WRITEMASK_XYZW,
-                           TGSI_FILE_INPUT, wincoordInput,
-                           TGSI_FILE_IMMEDIATE, pctx->numImmed);
+                           pctx->wincoordFile, wincoordInput,
+                           TGSI_FILE_IMMEDIATE, pctx->numImmed, false);
 
-   /* TEX texTemp, texTemp, sampler; */
-   tgsi_transform_tex_2d_inst(ctx,
-                              TGSI_FILE_TEMPORARY, texTemp,
-                              TGSI_FILE_TEMPORARY, texTemp,
-                              pctx->freeSampler);
+   /* TEX texTemp, texTemp, sampler, 2D; */
+   tgsi_transform_tex_inst(ctx,
+                           TGSI_FILE_TEMPORARY, texTemp,
+                           TGSI_FILE_TEMPORARY, texTemp,
+                           TGSI_TEXTURE_2D, sampIdx);
 
    /* KILL_IF -texTemp;   # if -texTemp < 0, kill fragment */
    tgsi_transform_kill_inst(ctx,
                             TGSI_FILE_TEMPORARY, texTemp,
-                            TGSI_SWIZZLE_W);
+                            TGSI_SWIZZLE_W, TRUE);
 }
 
 
 /**
  * Given a fragment shader, return a new fragment shader which
  * samples a stipple texture and executes KILL.
+ *
  * \param samplerUnitOut  returns the index of the sampler unit which
- *                        will be used to sample the stipple texture
+ *                        will be used to sample the stipple texture;
+ *                        if NULL, the fixed unit is used
+ * \param fixedUnit       fixed texture unit used for the stipple texture
+ * \param wincoordFile    TGSI_FILE_INPUT or TGSI_FILE_SYSTEM_VALUE,
+ *                        depending on which one is supported by the driver
+ *                        for TGSI_SEMANTIC_POSITION in the fragment shader
  */
 struct tgsi_token *
 util_pstipple_create_fragment_shader(const struct tgsi_token *tokens,
-                                     unsigned *samplerUnitOut)
+                                     unsigned *samplerUnitOut,
+                                     unsigned fixedUnit,
+                                     unsigned wincoordFile)
 {
    struct pstip_transform_context transform;
    const uint newLen = tgsi_num_tokens(tokens) + NUM_NEW_TOKENS;
@@ -350,8 +390,11 @@ util_pstipple_create_fragment_shader(const struct tgsi_token *tokens,
     */
    memset(&transform, 0, sizeof(transform));
    transform.wincoordInput = -1;
+   transform.wincoordFile = wincoordFile;
    transform.maxInput = -1;
    transform.coordOrigin = TGSI_FS_COORD_ORIGIN_UPPER_LEFT;
+   transform.hasFixedUnit = !samplerUnitOut;
+   transform.fixedUnit = fixedUnit;
    transform.base.prolog = pstip_transform_prolog;
    transform.base.transform_declaration = pstip_transform_decl;
    transform.base.transform_immediate = pstip_transform_immed;
@@ -368,9 +411,10 @@ util_pstipple_create_fragment_shader(const struct tgsi_token *tokens,
    tgsi_dump(new_fs->tokens, 0);
 #endif
 
-   assert(transform.freeSampler < PIPE_MAX_SAMPLERS);
-   *samplerUnitOut = transform.freeSampler;
+   if (samplerUnitOut) {
+      assert(transform.freeSampler < PIPE_MAX_SAMPLERS);
+      *samplerUnitOut = transform.freeSampler;
+   }
 
    return new_tokens;
 }
-

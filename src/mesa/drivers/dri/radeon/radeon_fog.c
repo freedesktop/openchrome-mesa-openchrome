@@ -32,8 +32,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *   Keith Whitwell <keithw@vmware.com>
  */
 
+#include "c99_math.h"
 #include "main/glheader.h"
-#include "main/imports.h"
 #include "main/context.h"
 #include "main/mtypes.h"
 #include "main/enums.h"
@@ -97,7 +97,7 @@ radeonComputeFogBlendFactor( struct gl_context *ctx, GLfloat fogcoord )
 {
 	GLfloat end  = ctx->Fog.End;
 	GLfloat d, temp;
-	const GLfloat z = FABSF(fogcoord);
+	const GLfloat z = fabsf(fogcoord);
 
 	switch (ctx->Fog.Mode) {
 	case GL_LINEAR:

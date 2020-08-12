@@ -27,6 +27,7 @@
  */
 
 #include <string.h>
+#include <stdlib.h>
 #include "glapi/glapi.h"
 #include "u_current.h"
 #include "table.h" /* for MAPI_TABLE_NUM_SLOTS */
@@ -37,11 +38,11 @@
  * u_current.c.
  */
 
-#ifdef GLX_USE_TLS
+#ifdef USE_ELF_TLS
 /* not used, but defined for compatibility */
 const struct _glapi_table *_glapi_Dispatch;
 const void *_glapi_Context;
-#endif /* GLX_USE_TLS */
+#endif /* USE_ELF_TLS */
 
 void
 _glapi_destroy_multithread(void)
@@ -64,7 +65,7 @@ _glapi_set_context(void *context)
 void
 _glapi_set_dispatch(struct _glapi_table *dispatch)
 {
-   u_current_set_table((const struct mapi_table *) dispatch);
+   u_current_set_table((const struct _glapi_table *) dispatch);
 }
 
 /**
@@ -168,22 +169,34 @@ _glapi_add_dispatch( const char * const * function_names,
    return (alias) ? stub_get_slot(alias) : -1;
 }
 
+#if defined(ANDROID) && ANDROID_API_LEVEL <= 30
+static int is_debug_marker_func(const char *name)
+{
+   return (!strcmp(name, "InsertEventMarkerEXT") ||
+           !strcmp(name, "PushGroupMarkerEXT") ||
+           !strcmp(name, "PopGroupMarkerEXT"));
+}
+#endif
+
 static const struct mapi_stub *
 _glapi_get_stub(const char *name, int generate)
 {
    const struct mapi_stub *stub;
-
-#ifdef USE_MGL_NAMESPACE
-   if (name)
-      name++;
-#endif
 
    if (!name || name[0] != 'g' || name[1] != 'l')
       return NULL;
    name += 2;
 
    stub = stub_find_public(name);
+#if defined(ANDROID) && ANDROID_API_LEVEL <= 30
+   /* Android framework till API Level 30 uses function pointers from
+    * eglGetProcAddress without checking GL_EXT_debug_marker.
+    * Make sure we don't return stub function pointers if we don't
+    * support GL_EXT_debug_marker */
+   if (!stub && !is_debug_marker_func(name))
+#else
    if (!stub)
+#endif
       stub = stub_find_dynamic(name, generate);
 
    return stub;
@@ -220,6 +233,28 @@ _glapi_get_proc_name(unsigned int offset)
 {
    const struct mapi_stub *stub = stub_find_by_slot(offset);
    return stub ? stub_get_name(stub) : NULL;
+}
+
+/** Return pointer to new dispatch table filled with no-op functions */
+struct _glapi_table *
+_glapi_new_nop_table(unsigned num_entries)
+{
+   struct _glapi_table *table;
+
+   if (num_entries > MAPI_TABLE_NUM_SLOTS)
+      num_entries = MAPI_TABLE_NUM_SLOTS;
+
+   table = malloc(num_entries * sizeof(mapi_func));
+   if (table) {
+      memcpy(table, table_noop_array, num_entries * sizeof(mapi_func));
+   }
+   return table;
+}
+
+void
+_glapi_set_nop_handler(_glapi_nop_handler_proc func)
+{
+   table_set_noop_handler(func);
 }
 
 /**

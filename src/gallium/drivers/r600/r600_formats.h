@@ -1,7 +1,7 @@
 #ifndef R600_FORMATS_H
 #define R600_FORMATS_H
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "r600_pipe.h"
 
 /* list of formats from R700 ISA document - apply across GPUs in different registers */
@@ -64,7 +64,7 @@
 #define     ENDIAN_8IN32                    2
 #define     ENDIAN_8IN64                    3
 
-static INLINE unsigned r600_endian_swap(unsigned size)
+static inline unsigned r600_endian_swap(unsigned size)
 {
 	if (R600_BIG_ENDIAN) {
 		switch (size) {
@@ -82,7 +82,7 @@ static INLINE unsigned r600_endian_swap(unsigned size)
 	}
 }
 
-static INLINE bool r600_is_vertex_format_supported(enum pipe_format format)
+static inline bool r600_is_vertex_format_supported(enum pipe_format format)
 {
 	const struct util_format_description *desc = util_format_description(format);
 	unsigned i;
@@ -113,6 +113,10 @@ static INLINE bool r600_is_vertex_format_supported(enum pipe_format format)
 	    !desc->channel[i].pure_integer &&
 	    (desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED ||
 	     desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED))
+		return false;
+
+	/* No 8 bit 3 channel formats */
+	if (desc->channel[i].size == 8 && desc->nr_channels == 3)
 		return false;
 
 	return true;

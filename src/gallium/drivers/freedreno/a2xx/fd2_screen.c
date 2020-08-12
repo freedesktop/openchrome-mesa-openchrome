@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
  *
@@ -27,50 +25,55 @@
  */
 
 #include "pipe/p_screen.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 #include "fd2_screen.h"
 #include "fd2_context.h"
+#include "fd2_emit.h"
 #include "fd2_util.h"
+#include "fd2_resource.h"
 
-static boolean
+static bool
 fd2_screen_is_format_supported(struct pipe_screen *pscreen,
 		enum pipe_format format,
 		enum pipe_texture_target target,
 		unsigned sample_count,
+		unsigned storage_sample_count,
 		unsigned usage)
 {
 	unsigned retval = 0;
 
 	if ((target >= PIPE_MAX_TEXTURE_TYPES) ||
-			(sample_count > 1) || /* TODO add MSAA */
-			!util_format_is_supported(format, usage)) {
+			(sample_count > 1)) { /* TODO add MSAA */
 		DBG("not supported: format=%s, target=%d, sample_count=%d, usage=%x",
 				util_format_name(format), target, sample_count, usage);
-		return FALSE;
+		return false;
 	}
 
-	/* TODO figure out how to render to other formats.. */
+	if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
+		return false;
+
 	if ((usage & PIPE_BIND_RENDER_TARGET) &&
-			((format != PIPE_FORMAT_B8G8R8A8_UNORM) &&
-			 (format != PIPE_FORMAT_B8G8R8X8_UNORM))) {
-		DBG("not supported render target: format=%s, target=%d, sample_count=%d, usage=%x",
-				util_format_name(format), target, sample_count, usage);
-		return FALSE;
+	    fd2_pipe2color(format) != (enum a2xx_colorformatx)~0) {
+		retval |= PIPE_BIND_RENDER_TARGET;
 	}
 
-	if ((usage & (PIPE_BIND_SAMPLER_VIEW |
-				PIPE_BIND_VERTEX_BUFFER)) &&
-			(fd2_pipe2surface(format) != ~0)) {
-		retval |= usage & (PIPE_BIND_SAMPLER_VIEW |
-				PIPE_BIND_VERTEX_BUFFER);
+	if ((usage & (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_VERTEX_BUFFER)) &&
+			!util_format_is_srgb(format) &&
+			!util_format_is_pure_integer(format) &&
+			fd2_pipe2surface(format).format != FMT_INVALID) {
+		retval |= usage & PIPE_BIND_VERTEX_BUFFER;
+		/* the only npot blocksize supported texture format is R32G32B32_FLOAT */
+		if (util_is_power_of_two_or_zero(util_format_get_blocksize(format)) ||
+				format == PIPE_FORMAT_R32G32B32_FLOAT)
+			retval |= usage & PIPE_BIND_SAMPLER_VIEW;
 	}
 
 	if ((usage & (PIPE_BIND_RENDER_TARGET |
 				PIPE_BIND_DISPLAY_TARGET |
 				PIPE_BIND_SCANOUT |
 				PIPE_BIND_SHARED)) &&
-			(fd2_pipe2color(format) != ~0)) {
+			(fd2_pipe2color(format) != (enum a2xx_colorformatx)~0)) {
 		retval |= usage & (PIPE_BIND_RENDER_TARGET |
 				PIPE_BIND_DISPLAY_TARGET |
 				PIPE_BIND_SCANOUT |
@@ -78,19 +81,14 @@ fd2_screen_is_format_supported(struct pipe_screen *pscreen,
 	}
 
 	if ((usage & PIPE_BIND_DEPTH_STENCIL) &&
-			(fd_pipe2depth(format) != ~0)) {
+			(fd_pipe2depth(format) != (enum adreno_rb_depth_format)~0)) {
 		retval |= PIPE_BIND_DEPTH_STENCIL;
 	}
 
 	if ((usage & PIPE_BIND_INDEX_BUFFER) &&
-			(fd_pipe2index(format) != ~0)) {
+			(fd_pipe2index(format) != (enum pc_di_index_size)~0)) {
 		retval |= PIPE_BIND_INDEX_BUFFER;
 	}
-
-	if (usage & PIPE_BIND_TRANSFER_READ)
-		retval |= PIPE_BIND_TRANSFER_READ;
-	if (usage & PIPE_BIND_TRANSFER_WRITE)
-		retval |= PIPE_BIND_TRANSFER_WRITE;
 
 	if (retval != usage) {
 		DBG("not supported: format=%s, target=%d, sample_count=%d, "
@@ -104,6 +102,15 @@ fd2_screen_is_format_supported(struct pipe_screen *pscreen,
 void
 fd2_screen_init(struct pipe_screen *pscreen)
 {
+	struct fd_screen *screen = fd_screen(pscreen);
+
+	screen->max_rts = 1;
 	pscreen->context_create = fd2_context_create;
 	pscreen->is_format_supported = fd2_screen_is_format_supported;
+
+	screen->setup_slices = fd2_setup_slices;
+	if (fd_mesa_debug & FD_DBG_TTILE)
+		screen->tile_mode = fd2_tile_mode;
+
+	fd2_emit_init_screen(pscreen);
 }

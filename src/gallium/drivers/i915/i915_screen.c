@@ -27,11 +27,12 @@
 
 
 #include "draw/draw_context.h"
-#include "os/os_misc.h"
-#include "util/u_format.h"
-#include "util/u_format_s3tc.h"
+#include "util/os_misc.h"
+#include "util/format/u_format.h"
+#include "util/format/u_format_s3tc.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/u_screen.h"
 #include "util/u_string.h"
 
 #include "i915_reg.h"
@@ -52,6 +53,12 @@ static const char *
 i915_get_vendor(struct pipe_screen *screen)
 {
    return "Mesa Project";
+}
+
+static const char *
+i915_get_device_vendor(struct pipe_screen *screen)
+{
+   return "Intel";
 }
 
 static const char *
@@ -96,12 +103,14 @@ i915_get_name(struct pipe_screen *screen)
       break;
    }
 
-   util_snprintf(buffer, sizeof(buffer), "i915 (chipset: %s)", chipset);
+   snprintf(buffer, sizeof(buffer), "i915 (chipset: %s)", chipset);
    return buffer;
 }
 
 static int
-i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_shader_cap cap)
+i915_get_shader_param(struct pipe_screen *screen,
+                      enum pipe_shader_type shader,
+                      enum pipe_shader_cap cap)
 {
    switch(shader) {
    case PIPE_SHADER_VERTEX:
@@ -138,8 +147,6 @@ i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_sha
          return 1;
       case PIPE_SHADER_CAP_MAX_TEMPS:
          return 12; /* XXX: 12 -> 32 ? */
-      case PIPE_SHADER_CAP_MAX_PREDS:
-         return 0;
       case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
          return 0;
@@ -151,10 +158,28 @@ i915_get_shader_param(struct pipe_screen *screen, unsigned shader, enum pipe_sha
       case PIPE_SHADER_CAP_SUBROUTINES:
          return 0;
       case PIPE_SHADER_CAP_INTEGERS:
+      case PIPE_SHADER_CAP_INT64_ATOMICS:
+      case PIPE_SHADER_CAP_FP16:
+      case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+      case PIPE_SHADER_CAP_INT16:
+      case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
          return 0;
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
          return I915_TEX_UNITS;
+      case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
+      case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
+      case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
+      case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+      case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
+      case PIPE_SHADER_CAP_PREFERRED_IR:
+      case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
+         return 0;
+      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+         return 32;
       default:
          debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
          return 0;
@@ -178,68 +203,31 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
    case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_PRIMITIVE_RESTART: /* draw module */
-   case PIPE_CAP_TEXTURE_SHADOW_MAP:
-   case PIPE_CAP_TWO_SIDED_STENCIL:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_TGSI_INSTANCEID:
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
    case PIPE_CAP_USER_VERTEX_BUFFERS:
-   case PIPE_CAP_USER_INDEX_BUFFERS:
-   case PIPE_CAP_USER_CONSTANT_BUFFERS:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return 1;
 
-   /* Unsupported features (boolean caps). */
-   case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-   case PIPE_CAP_DEPTH_CLIP_DISABLE:
-   case PIPE_CAP_INDEP_BLEND_ENABLE:
-   case PIPE_CAP_INDEP_BLEND_FUNC:
-   case PIPE_CAP_SHADER_STENCIL_EXPORT:
-   case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
-   case PIPE_CAP_TEXTURE_SWIZZLE:
-   case PIPE_CAP_QUERY_TIME_ELAPSED:
-   case PIPE_CAP_SM3:
-   case PIPE_CAP_SEAMLESS_CUBE_MAP:
-   case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
-   case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
-   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
-   case PIPE_CAP_CONDITIONAL_RENDER:
-   case PIPE_CAP_TEXTURE_BARRIER:
-   case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
-   case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
-   case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
-   case PIPE_CAP_START_INSTANCE:
-   case PIPE_CAP_QUERY_TIMESTAMP:
-   case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
-   case PIPE_CAP_TEXTURE_MULTISAMPLE:
-   case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
-   case PIPE_CAP_CUBE_MAP_ARRAY:
-   case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
-   case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
-   case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
-   case PIPE_CAP_TEXTURE_GATHER_SM5:
-   case PIPE_CAP_FAKE_SW_MSAA:
-   case PIPE_CAP_TEXTURE_QUERY_LOD:
-   case PIPE_CAP_SAMPLE_SHADING:
-   case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
-   case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
-   case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
-   case PIPE_CAP_CLIP_HALFZ:
-   case PIPE_CAP_VERTEXID_NOBASE:
+   case PIPE_CAP_PCI_GROUP:
+   case PIPE_CAP_PCI_BUS:
+   case PIPE_CAP_PCI_DEVICE:
+   case PIPE_CAP_PCI_FUNCTION:
       return 0;
 
-   case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
-   case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
-   case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
-   case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
-   case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
-   case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
-   case PIPE_CAP_DRAW_INDIRECT:
-   case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
-   case PIPE_CAP_SAMPLER_VIEW_TARGET:
+   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
+   case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
       return 0;
+
+   case PIPE_CAP_MAX_GS_INVOCATIONS:
+      return 32;
+
+   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+      return 1 << 27;
 
    case PIPE_CAP_MAX_VIEWPORTS:
       return 1;
@@ -248,6 +236,7 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
       return 64;
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
+   case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       return 120;
 
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
@@ -258,30 +247,16 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
       return is->debug.lie ? 1 : 0;
 
    /* Texturing. */
-   case PIPE_CAP_MAX_TEXTURE_2D_LEVELS:
-      return I915_MAX_TEXTURE_2D_LEVELS;
+   case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
+      return 1 << (I915_MAX_TEXTURE_2D_LEVELS - 1);
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return I915_MAX_TEXTURE_3D_LEVELS;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-      return I915_MAX_TEXTURE_2D_LEVELS;
-   case PIPE_CAP_MIN_TEXEL_OFFSET:
-   case PIPE_CAP_MAX_TEXEL_OFFSET:
-   case PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET:
-   case PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET:
-   case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
-   case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
-   case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
-      return 0;
+      return 1 << (I915_MAX_TEXTURE_2D_LEVELS - 1);
 
    /* Render targets. */
    case PIPE_CAP_MAX_RENDER_TARGETS:
       return 1;
-
-   /* Geometry shader output, unsupported. */
-   case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
-   case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
-   case PIPE_CAP_MAX_VERTEX_STREAMS:
-      return 0;
 
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
       return 2048;
@@ -290,11 +265,10 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
       return 1;
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
-      return 0;
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_LITTLE;
+   case PIPE_CAP_MAX_VARYINGS:
+      return 10;
 
    case PIPE_CAP_VENDOR_ID:
       return 0x8086;
@@ -319,8 +293,7 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
       return 1;
 
    default:
-      debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
-      return 0;
+      return u_pipe_screen_get_param_defaults(screen, cap);
    }
 }
 
@@ -344,17 +317,25 @@ i915_get_paramf(struct pipe_screen *screen, enum pipe_capf cap)
    case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
       return 16.0;
 
+   case PIPE_CAPF_MIN_CONSERVATIVE_RASTER_DILATE:
+      /* fall-through */
+   case PIPE_CAPF_MAX_CONSERVATIVE_RASTER_DILATE:
+      /* fall-through */
+   case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
+      return 0.0f;
+
    default:
       debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
       return 0;
    }
 }
 
-boolean
+bool
 i915_is_format_supported(struct pipe_screen *screen,
                          enum pipe_format format,
                          enum pipe_texture_target target,
                          unsigned sample_count,
+                         unsigned storage_sample_count,
                          unsigned tex_usage)
 {
    static const enum pipe_format tex_supported[] = {
@@ -407,11 +388,11 @@ i915_is_format_supported(struct pipe_screen *screen,
    const enum pipe_format *list;
    uint i;
 
-   if (!util_format_is_supported(format, tex_usage))
-      return FALSE;
-
    if (sample_count > 1)
-      return FALSE;
+      return false;
+
+   if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
+      return false;
 
    if(tex_usage & PIPE_BIND_DEPTH_STENCIL)
       list = depth_supported;
@@ -420,14 +401,14 @@ i915_is_format_supported(struct pipe_screen *screen,
    else if (tex_usage & PIPE_BIND_SAMPLER_VIEW)
       list = tex_supported;
    else
-      return TRUE; /* PIPE_BIND_{VERTEX,INDEX}_BUFFER */
+      return true; /* PIPE_BIND_{VERTEX,INDEX}_BUFFER */
 
    for (i = 0; list[i] != PIPE_FORMAT_NONE; i++) {
       if (list[i] == format)
-         return TRUE;
+         return true;
    }
 
-   return FALSE;
+   return false;
 }
 
 
@@ -446,21 +427,16 @@ i915_fence_reference(struct pipe_screen *screen,
    is->iws->fence_reference(is->iws, ptr, fence);
 }
 
-static boolean
-i915_fence_signalled(struct pipe_screen *screen,
-                     struct pipe_fence_handle *fence)
-{
-   struct i915_screen *is = i915_screen(screen);
-
-   return is->iws->fence_signalled(is->iws, fence) == 1;
-}
-
-static boolean
+static bool
 i915_fence_finish(struct pipe_screen *screen,
+                  struct pipe_context *ctx,
                   struct pipe_fence_handle *fence,
                   uint64_t timeout)
 {
    struct i915_screen *is = i915_screen(screen);
+
+   if (!timeout)
+      return is->iws->fence_signalled(is->iws, fence) == 1;
 
    return is->iws->fence_finish(is->iws, fence) == 1;
 }
@@ -540,6 +516,7 @@ i915_screen_create(struct i915_winsys *iws)
 
    is->base.get_name = i915_get_name;
    is->base.get_vendor = i915_get_vendor;
+   is->base.get_device_vendor = i915_get_device_vendor;
    is->base.get_param = i915_get_param;
    is->base.get_shader_param = i915_get_shader_param;
    is->base.get_paramf = i915_get_paramf;
@@ -548,14 +525,11 @@ i915_screen_create(struct i915_winsys *iws)
    is->base.context_create = i915_create_context;
 
    is->base.fence_reference = i915_fence_reference;
-   is->base.fence_signalled = i915_fence_signalled;
    is->base.fence_finish = i915_fence_finish;
 
    i915_init_screen_resource_functions(is);
 
    i915_debug_init(is);
-
-   util_format_s3tc_init();
 
    return &is->base;
 }

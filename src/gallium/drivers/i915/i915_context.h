@@ -37,7 +37,7 @@
 
 #include "tgsi/tgsi_scan.h"
 
-#include "util/u_slab.h"
+#include "util/slab.h"
 #include "util/u_blitter.h"
 
 
@@ -195,7 +195,6 @@ struct i915_rasterizer_state {
 
    unsigned light_twoside : 1;
    unsigned st;
-   enum interp_mode color_interp;
 
    unsigned LIS4;
    unsigned LIS7;
@@ -250,7 +249,6 @@ struct i915_context {
    struct pipe_sampler_view *fragment_sampler_views[PIPE_MAX_SAMPLERS];
    struct pipe_sampler_view *vertex_sampler_views[PIPE_MAX_SAMPLERS];
    struct pipe_viewport_state viewport;
-   struct pipe_index_buffer index_buffer;
 
    unsigned dirty;
 
@@ -279,8 +277,8 @@ struct i915_context {
    struct i915_winsys_buffer *validation_buffers[2 + 1 + I915_TEX_UNITS];
    int num_validation_buffers;
 
-   struct util_slab_mempool transfer_pool;
-   struct util_slab_mempool texture_transfer_pool;
+   struct slab_mempool transfer_pool;
+   struct slab_mempool texture_transfer_pool;
 
    /* state for tracking flushes */
    int last_fired_vertices;
@@ -291,7 +289,7 @@ struct i915_context {
    struct blitter_context* blitter;
 };
 
-/* A flag for each state_tracker state object:
+/* A flag for each frontend state object:
  */
 #define I915_NEW_VIEWPORT      0x1
 #define I915_NEW_RASTERIZER    0x2
@@ -339,7 +337,7 @@ struct i915_context {
 #define I915_DST_VARS                   4
 #define I915_DST_RECT                   8
 
-static INLINE
+static inline
 void i915_set_flush_dirty(struct i915_context *i915, unsigned flush)
 {
    i915->hardware_dirty |= I915_HW_FLUSH;
@@ -378,9 +376,11 @@ void i915_emit_hardware_state(struct i915_context *i915 );
  * i915_clear.c: 
  */
 void i915_clear_blitter(struct pipe_context *pipe, unsigned buffers,
+                        const struct pipe_scissor_state *scissor_state,
                         const union pipe_color_union *color,
                         double depth, unsigned stencil);
 void i915_clear_render(struct pipe_context *pipe, unsigned buffers,
+                       const struct pipe_scissor_state *scissor_state,
                        const union pipe_color_union *color,
                        double depth, unsigned stencil);
 void i915_clear_emit(struct pipe_context *pipe, unsigned buffers,
@@ -401,14 +401,14 @@ void i915_init_string_functions( struct i915_context *i915 );
  * i915_context.c
  */
 struct pipe_context *i915_create_context(struct pipe_screen *screen,
-					 void *priv);
+					 void *priv, unsigned flags);
 
 
 /***********************************************************************
  * Inline conversion functions.  These are better-typed than the
  * macros used previously:
  */
-static INLINE struct i915_context *
+static inline struct i915_context *
 i915_context( struct pipe_context *pipe )
 {
    return (struct i915_context *)pipe;

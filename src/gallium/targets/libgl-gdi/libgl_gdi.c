@@ -38,21 +38,25 @@
 
 #include "util/u_debug.h"
 #include "stw_winsys.h"
+#include "stw_device.h"
 #include "gdi/gdi_sw_winsys.h"
 
 #include "softpipe/sp_texture.h"
 #include "softpipe/sp_screen.h"
 #include "softpipe/sp_public.h"
 
-#ifdef HAVE_LLVMPIPE
+#ifdef GALLIUM_LLVMPIPE
 #include "llvmpipe/lp_texture.h"
 #include "llvmpipe/lp_screen.h"
 #include "llvmpipe/lp_public.h"
 #endif
 
+#ifdef GALLIUM_SWR
+#include "swr/swr_public.h"
+#endif
 
 static boolean use_llvmpipe = FALSE;
-
+static boolean use_swr = FALSE;
 
 static struct pipe_screen *
 gdi_screen_create(void)
@@ -66,26 +70,34 @@ gdi_screen_create(void)
    if(!winsys)
       goto no_winsys;
 
-#ifdef HAVE_LLVMPIPE
+#ifdef GALLIUM_LLVMPIPE
    default_driver = "llvmpipe";
+#elif GALLIUM_SWR
+   default_driver = "swr";
 #else
    default_driver = "softpipe";
 #endif
 
    driver = debug_get_option("GALLIUM_DRIVER", default_driver);
 
-#ifdef HAVE_LLVMPIPE
+#ifdef GALLIUM_LLVMPIPE
    if (strcmp(driver, "llvmpipe") == 0) {
       screen = llvmpipe_create_screen( winsys );
+      if (screen)
+         use_llvmpipe = TRUE;
    }
-#else
-   (void) driver;
 #endif
+#ifdef GALLIUM_SWR
+   if (strcmp(driver, "swr") == 0) {
+      screen = swr_create_screen( winsys );
+      if (screen)
+         use_swr = TRUE;
+   }
+#endif
+   (void) driver;
 
    if (screen == NULL) {
       screen = softpipe_create_screen( winsys );
-   } else {
-      use_llvmpipe = TRUE;
    }
 
    if(!screen)
@@ -106,7 +118,7 @@ gdi_present(struct pipe_screen *screen,
             HDC hDC)
 {
    /* This will fail if any interposing layer (trace, debug, etc) has
-    * been introduced between the state-trackers and the pipe driver.
+    * been introduced between the gallium frontends and the pipe driver.
     *
     * Ideally this would get replaced with a call to
     * pipe_screen::flush_frontbuffer().
@@ -118,11 +130,18 @@ gdi_present(struct pipe_screen *screen,
    struct sw_winsys *winsys = NULL;
    struct sw_displaytarget *dt = NULL;
 
-#ifdef HAVE_LLVMPIPE
+#ifdef GALLIUM_LLVMPIPE
    if (use_llvmpipe) {
       winsys = llvmpipe_screen(screen)->winsys;
       dt = llvmpipe_resource(res)->dt;
       gdi_sw_display(winsys, dt, hDC);
+      return;
+   }
+#endif
+
+#ifdef GALLIUM_SWR
+   if (use_swr) {
+      swr_gdi_swap(screen, res, hDC);
       return;
    }
 #endif
@@ -143,8 +162,12 @@ static const struct stw_winsys stw_winsys = {
 };
 
 
+EXTERN_C BOOL WINAPI
+DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);
+
+
 BOOL WINAPI
-DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
+DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 {
    switch (fdwReason) {
    case DLL_PROCESS_ATTACH:
@@ -161,9 +184,22 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
       break;
 
    case DLL_PROCESS_DETACH:
-      if (lpReserved == NULL) {
+      if (lpvReserved == NULL) {
+         // We're being unloaded from the process.
          stw_cleanup_thread();
          stw_cleanup();
+      } else {
+         // Process itself is terminating, and all threads and modules are
+         // being detached.
+         //
+         // The order threads (including llvmpipe rasterizer threads) are
+         // destroyed can not be relied up, so it's not safe to cleanup.
+         //
+         // However global destructors (e.g., LLVM's) will still be called, and
+         // if Microsoft OPENGL32.DLL's DllMain is called after us, it will
+         // still try to invoke DrvDeleteContext to destroys all outstanding,
+         // so set stw_dev to NULL to return immediately if that happens.
+         stw_dev = NULL;
       }
       break;
    }

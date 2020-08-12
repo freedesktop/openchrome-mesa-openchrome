@@ -25,9 +25,9 @@
  *
  */
 
-#include "main/imports.h"
 #include "main/mtypes.h"
 #include "main/bufferobj.h"
+#include "util/u_memory.h"
 
 #include "radeon_common.h"
 #include "radeon_buffer_objects.h"
@@ -71,7 +71,7 @@ radeonDeleteBufferObject(struct gl_context * ctx,
         radeon_bo_unref(radeon_obj->bo);
     }
 
-    free(radeon_obj);
+    _mesa_delete_buffer_object(ctx, obj);
 }
 
 

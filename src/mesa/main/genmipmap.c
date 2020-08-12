@@ -38,27 +38,18 @@
 #include "texobj.h"
 #include "hash.h"
 
-/**
- * Implements glGenerateMipmap and glGenerateTextureMipmap.
- * Generates all the mipmap levels below the base level.
- */
-void
-_mesa_generate_texture_mipmap(struct gl_context *ctx,
-                              struct gl_texture_object *texObj, GLenum target,
-                              bool dsa)
+bool
+_mesa_is_valid_generate_texture_mipmap_target(struct gl_context *ctx,
+                                              GLenum target)
 {
-   struct gl_texture_image *srcImage;
-   GLboolean error;
-   const char *suffix = dsa ? "Texture" : "";
-
-   FLUSH_VERTICES(ctx, 0);
+   bool error;
 
    switch (target) {
    case GL_TEXTURE_1D:
       error = _mesa_is_gles(ctx);
       break;
    case GL_TEXTURE_2D:
-      error = GL_FALSE;
+      error = false;
       break;
    case GL_TEXTURE_3D:
       error = ctx->API == API_OPENGLES;
@@ -74,47 +65,93 @@ _mesa_generate_texture_mipmap(struct gl_context *ctx,
          || !ctx->Extensions.EXT_texture_array;
       break;
    case GL_TEXTURE_CUBE_MAP_ARRAY:
-      error = _mesa_is_gles(ctx) ||
-              !ctx->Extensions.ARB_texture_cube_map_array;
+      error = !_mesa_has_texture_cube_map_array(ctx);
       break;
    default:
-      error = GL_TRUE;
+      error = true;
    }
 
-   if (error) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glGenerate%sMipmap(target=%s)",
-                  suffix, _mesa_lookup_enum_by_nr(target));
-      return;
+   return !error;
+}
+
+bool
+_mesa_is_valid_generate_texture_mipmap_internalformat(struct gl_context *ctx,
+                                                      GLenum internalformat)
+{
+   if (_mesa_is_gles3(ctx)) {
+      /* From the ES 3.2 specification's description of GenerateMipmap():
+       * "An INVALID_OPERATION error is generated if the levelbase array was
+       *  not specified with an unsized internal format from table 8.3 or a
+       *  sized internal format that is both color-renderable and
+       *  texture-filterable according to table 8.10."
+       *
+       * GL_EXT_texture_format_BGRA8888 adds a GL_BGRA_EXT unsized internal
+       * format, and includes it in a very similar looking table.  So we
+       * include it here as well.
+       */
+      return internalformat == GL_RGBA || internalformat == GL_RGB ||
+             internalformat == GL_LUMINANCE_ALPHA ||
+             internalformat == GL_LUMINANCE || internalformat == GL_ALPHA ||
+             internalformat == GL_BGRA_EXT ||
+             (_mesa_is_es3_color_renderable(ctx, internalformat) &&
+              _mesa_is_es3_texture_filterable(ctx, internalformat));
    }
+
+   return (!_mesa_is_enum_format_integer(internalformat) &&
+           !_mesa_is_depthstencil_format(internalformat) &&
+           !_mesa_is_astc_format(internalformat) &&
+           !_mesa_is_stencil_format(internalformat));
+}
+
+/**
+ * Implements glGenerateMipmap and glGenerateTextureMipmap.
+ * Generates all the mipmap levels below the base level.
+ * Error-checking is done only if caller is not NULL.
+ */
+static ALWAYS_INLINE void
+generate_texture_mipmap(struct gl_context *ctx,
+                        struct gl_texture_object *texObj, GLenum target,
+                        const char* caller)
+{
+   struct gl_texture_image *srcImage;
+
+   FLUSH_VERTICES(ctx, 0);
 
    if (texObj->BaseLevel >= texObj->MaxLevel) {
       /* nothing to do */
       return;
    }
 
-   if (texObj->Target == GL_TEXTURE_CUBE_MAP &&
+   if (caller && texObj->Target == GL_TEXTURE_CUBE_MAP &&
        !_mesa_cube_complete(texObj)) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glGenerate%sMipmap(incomplete cube map)", suffix);
+                  "%s(incomplete cube map)", caller);
       return;
    }
 
    _mesa_lock_texture(ctx, texObj);
 
    srcImage = _mesa_select_tex_image(texObj, target, texObj->BaseLevel);
-   if (!srcImage) {
-      _mesa_unlock_texture(ctx, texObj);
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glGenerate%sMipmap(zero size base image)", suffix);
-      return;
+   if (caller) {
+      if (!srcImage) {
+         _mesa_unlock_texture(ctx, texObj);
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "%s(zero size base image)", caller);
+         return;
+      }
+
+      if (!_mesa_is_valid_generate_texture_mipmap_internalformat(ctx,
+                                                                 srcImage->InternalFormat)) {
+         _mesa_unlock_texture(ctx, texObj);
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "%s(invalid internal format %s)", caller,
+                     _mesa_enum_to_string(srcImage->InternalFormat));
+         return;
+      }
    }
 
-   if (_mesa_is_enum_format_integer(srcImage->InternalFormat) ||
-       _mesa_is_depthstencil_format(srcImage->InternalFormat) ||
-       _mesa_is_stencil_format(srcImage->InternalFormat)) {
+   if (srcImage->Width == 0 || srcImage->Height == 0) {
       _mesa_unlock_texture(ctx, texObj);
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glGenerate%sMipmap(invalid internal format)", suffix);
       return;
    }
 
@@ -122,7 +159,7 @@ _mesa_generate_texture_mipmap(struct gl_context *ctx,
       GLuint face;
       for (face = 0; face < 6; face++) {
          ctx->Driver.GenerateMipmap(ctx,
-                      GL_TEXTURE_CUBE_MAP_POSITIVE_X_ARB + face, texObj);
+                      GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, texObj);
       }
    }
    else {
@@ -137,21 +174,63 @@ _mesa_generate_texture_mipmap(struct gl_context *ctx,
  * cube face, a set of array slices, etc.
  */
 void GLAPIENTRY
+_mesa_GenerateMipmap_no_error(GLenum target)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_texture_object *texObj = _mesa_get_current_tex_object(ctx, target);
+   generate_texture_mipmap(ctx, texObj, target, NULL);
+}
+
+void GLAPIENTRY
 _mesa_GenerateMipmap(GLenum target)
 {
    struct gl_texture_object *texObj;
    GET_CURRENT_CONTEXT(ctx);
 
+   if (!_mesa_is_valid_generate_texture_mipmap_target(ctx, target)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "glGenerateMipmap(target=%s)",
+                  _mesa_enum_to_string(target));
+      return;
+   }
+
    texObj = _mesa_get_current_tex_object(ctx, target);
    if (!texObj)
       return;
 
-   _mesa_generate_texture_mipmap(ctx, texObj, target, false);
+   generate_texture_mipmap(ctx, texObj, target, "glGenerateMipmap");
 }
 
 /**
  * Generate all the mipmap levels below the base level.
  */
+void GLAPIENTRY
+_mesa_GenerateTextureMipmap_no_error(GLuint texture)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_texture_object *texObj = _mesa_lookup_texture(ctx, texture);
+   generate_texture_mipmap(ctx, texObj, texObj->Target, NULL);
+}
+
+static void
+validate_params_and_generate_mipmap(struct gl_texture_object *texObj, const char* caller)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!texObj)
+      return;
+
+   if (!_mesa_is_valid_generate_texture_mipmap_target(ctx, texObj->Target)) {
+      _mesa_error(ctx, GL_INVALID_ENUM, "%s(target=%s)",
+                  caller,
+                  _mesa_enum_to_string(texObj->Target));
+      return;
+   }
+
+   generate_texture_mipmap(ctx, texObj, texObj->Target, caller);
+}
+
 void GLAPIENTRY
 _mesa_GenerateTextureMipmap(GLuint texture)
 {
@@ -159,8 +238,32 @@ _mesa_GenerateTextureMipmap(GLuint texture)
    GET_CURRENT_CONTEXT(ctx);
 
    texObj = _mesa_lookup_texture_err(ctx, texture, "glGenerateTextureMipmap");
-   if (!texObj)
-      return;
+   validate_params_and_generate_mipmap(texObj, "glGenerateTextureMipmap");
+}
 
-   _mesa_generate_texture_mipmap(ctx, texObj, texObj->Target, true);
+void GLAPIENTRY
+_mesa_GenerateTextureMipmapEXT(GLuint texture, GLenum target)
+{
+   struct gl_texture_object *texObj;
+   GET_CURRENT_CONTEXT(ctx);
+
+   texObj = _mesa_lookup_or_create_texture(ctx, target, texture,
+                                           false, true,
+                                           "glGenerateTextureMipmapEXT");
+   validate_params_and_generate_mipmap(texObj,
+                                       "glGenerateTextureMipmapEXT");
+}
+
+void GLAPIENTRY
+_mesa_GenerateMultiTexMipmapEXT(GLenum texunit, GLenum target)
+{
+   struct gl_texture_object *texObj;
+   GET_CURRENT_CONTEXT(ctx);
+
+   texObj = _mesa_get_texobj_by_target_and_texunit(ctx, target,
+                                                   texunit - GL_TEXTURE0,
+                                                   true,
+                                                   "glGenerateMultiTexMipmapEXT");
+   validate_params_and_generate_mipmap(texObj,
+                                       "glGenerateMultiTexMipmapEXT");
 }

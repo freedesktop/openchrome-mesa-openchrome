@@ -33,7 +33,7 @@
 #include "pipe/p_defines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_dual_blend.h"
 #include "sp_context.h"
 #include "sp_state.h"
@@ -63,7 +63,7 @@ struct blend_quad_stage
 
 
 /** cast wrapper */
-static INLINE struct blend_quad_stage *
+static inline struct blend_quad_stage *
 blend_quad_stage(struct quad_stage *stage)
 {
    return (struct blend_quad_stage *) stage;

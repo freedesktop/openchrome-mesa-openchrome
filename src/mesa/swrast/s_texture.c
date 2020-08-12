@@ -31,6 +31,8 @@
 #include "main/fbobject.h"
 #include "main/teximage.h"
 #include "main/texobj.h"
+#include "util/u_memory.h"
+#include "util/u_math.h"
 #include "swrast/swrast.h"
 #include "swrast/s_context.h"
 
@@ -60,7 +62,7 @@ _swrast_delete_texture_image(struct gl_context *ctx,
 }
 
 static unsigned int
-texture_slices(struct gl_texture_image *texImage)
+texture_slices(const struct gl_texture_image *texImage)
 {
    if (texImage->TexObject->Target == GL_TEXTURE_1D_ARRAY)
       return texImage->Height;
@@ -99,7 +101,7 @@ _swrast_alloc_texture_image_buffer(struct gl_context *ctx,
                                            _swrast_teximage_slice_height(texImage), 1);
 
    assert(!swImg->Buffer);
-   swImg->Buffer = _mesa_align_malloc(bytesPerSlice * slices, 512);
+   swImg->Buffer = align_malloc(bytesPerSlice * slices, 512);
    if (!swImg->Buffer)
       return GL_FALSE;
 
@@ -127,9 +129,9 @@ _swrast_init_texture_image(struct gl_texture_image *texImage)
 {
    struct swrast_texture_image *swImg = swrast_texture_image(texImage);
 
-   if ((texImage->Width == 1 || _mesa_is_pow_two(texImage->Width2)) &&
-       (texImage->Height == 1 || _mesa_is_pow_two(texImage->Height2)) &&
-       (texImage->Depth == 1 || _mesa_is_pow_two(texImage->Depth2)))
+   if ((texImage->Width == 1 || util_is_power_of_two_or_zero(texImage->Width2)) &&
+       (texImage->Height == 1 || util_is_power_of_two_or_zero(texImage->Height2)) &&
+       (texImage->Depth == 1 || util_is_power_of_two_or_zero(texImage->Depth2)))
       swImg->_IsPowerOfTwo = GL_TRUE;
    else
       swImg->_IsPowerOfTwo = GL_FALSE;
@@ -165,7 +167,7 @@ _swrast_free_texture_image_buffer(struct gl_context *ctx,
 {
    struct swrast_texture_image *swImage = swrast_texture_image(texImage);
 
-   _mesa_align_free(swImage->Buffer);
+   align_free(swImage->Buffer);
    swImage->Buffer = NULL;
 
    free(swImage->ImageSlices);
@@ -188,6 +190,7 @@ check_map_teximage(const struct gl_texture_image *texImage,
    assert(y < texImage->Height || texImage->Height == 0);
    assert(x + w <= texImage->Width);
    assert(y + h <= texImage->Height);
+   assert(slice < texture_slices(texImage));
 }
 
 /**
@@ -240,7 +243,6 @@ _swrast_map_teximage(struct gl_context *ctx,
    assert(swImage->Buffer);
    assert(swImage->Buffer == swImage->ImageSlices[0]);
 
-   assert(slice < texture_slices(texImage));
    map = swImage->ImageSlices[slice];
 
    /* apply x/y offset to map address */

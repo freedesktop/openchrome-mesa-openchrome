@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
  *
@@ -102,8 +100,6 @@ fd4_zsa_state_create(struct pipe_context *pctx,
 		so->rb_depth_control |=
 			A4XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE;
 	}
-
-	so->rb_render_control = 0x8;  /* XXX */
 
 	return so;
 }

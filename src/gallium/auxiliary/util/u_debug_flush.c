@@ -44,23 +44,32 @@
 #include "util/u_memory.h"
 #include "util/u_debug_flush.h"
 #include "util/u_hash_table.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 #include "util/u_inlines.h"
 #include "util/u_string.h"
 #include "os/os_thread.h"
 #include <stdio.h>
 
+/* Future improvement: Use realloc instead? */
+#define DEBUG_FLUSH_MAP_DEPTH 32
+
+struct debug_map_item {
+   struct debug_stack_frame *frame;
+   boolean persistent;
+};
+
 struct debug_flush_buf {
    /* Atomic */
    struct pipe_reference reference; /* Must be the first member. */
-   pipe_mutex mutex;
+   mtx_t mutex;
    /* Immutable */
-   boolean supports_unsync;
+   boolean supports_persistent;
    unsigned bt_depth;
    /* Protected by mutex */
-   boolean mapped;
-   boolean mapped_sync;
-   struct debug_stack_frame *map_frame;
+   int map_count;
+   boolean has_sync_map;
+   int last_sync_map;
+   struct debug_map_item maps[DEBUG_FLUSH_MAP_DEPTH];
 };
 
 struct debug_flush_item {
@@ -73,11 +82,11 @@ struct debug_flush_ctx {
    /* Contexts are used by a single thread at a time */
    unsigned bt_depth;
    boolean catch_map_of_referenced;
-   struct util_hash_table *ref_hash;
+   struct hash_table *ref_hash;
    struct list_head head;
 };
 
-pipe_static_mutex(list_mutex);
+static mtx_t list_mutex = _MTX_INITIALIZER_NP;
 static struct list_head ctx_list = {&ctx_list, &ctx_list};
 
 static struct debug_stack_frame *
@@ -93,30 +102,18 @@ debug_flush_capture_frame(int start, int depth)
    return frames;
 }
 
-static int
-debug_flush_pointer_compare(void *key1, void *key2)
-{
-   return (key1 == key2) ? 0 : 1;
-}
-
-static unsigned
-debug_flush_pointer_hash(void *key)
-{
-   return (unsigned) (unsigned long) key;
-}
-
 struct debug_flush_buf *
-debug_flush_buf_create(boolean supports_unsync, unsigned bt_depth)
+debug_flush_buf_create(boolean supports_persistent, unsigned bt_depth)
 {
    struct debug_flush_buf *fbuf = CALLOC_STRUCT(debug_flush_buf);
 
    if (!fbuf)
       goto out_no_buf;
 
-   fbuf->supports_unsync = supports_unsync;
+   fbuf->supports_persistent = supports_persistent;
    fbuf->bt_depth = bt_depth;
    pipe_reference_init(&fbuf->reference, 1);
-   pipe_mutex_init(fbuf->mutex);
+   (void) mtx_init(&fbuf->mutex, mtx_plain);
 
    return fbuf;
 out_no_buf:
@@ -132,8 +129,11 @@ debug_flush_buf_reference(struct debug_flush_buf **dst,
    struct debug_flush_buf *fbuf = *dst;
 
    if (pipe_reference(&(*dst)->reference, &src->reference)) {
-      FREE(fbuf->map_frame);
+      int i;
 
+      for (i = 0; i < fbuf->map_count; ++i) {
+         FREE(fbuf->maps[i].frame);
+      }
       FREE(fbuf);
    }
 
@@ -151,23 +151,23 @@ debug_flush_item_destroy(struct debug_flush_item *item)
 }
 
 struct debug_flush_ctx *
-debug_flush_ctx_create(boolean catch_reference_of_mapped, unsigned bt_depth)
+debug_flush_ctx_create(UNUSED boolean catch_reference_of_mapped,
+                       unsigned bt_depth)
 {
    struct debug_flush_ctx *fctx = CALLOC_STRUCT(debug_flush_ctx);
 
    if (!fctx)
       goto out_no_ctx;
 
-   fctx->ref_hash = util_hash_table_create(debug_flush_pointer_hash,
-                                           debug_flush_pointer_compare);
+   fctx->ref_hash = util_hash_table_create_ptr_keys();
 
    if (!fctx->ref_hash)
       goto out_no_ref_hash;
 
    fctx->bt_depth = bt_depth;
-   pipe_mutex_lock(list_mutex);
+   mtx_lock(&list_mutex);
    list_addtail(&fctx->head, &ctx_list);
-   pipe_mutex_unlock(list_mutex);
+   mtx_unlock(&list_mutex);
 
    return fctx;
 
@@ -210,29 +210,44 @@ debug_flush_alert(const char *s, const char *op,
 void
 debug_flush_map(struct debug_flush_buf *fbuf, unsigned flags)
 {
-   boolean mapped_sync = FALSE;
+   boolean map_sync, persistent;
 
    if (!fbuf)
       return;
 
-   pipe_mutex_lock(fbuf->mutex);
-   if (fbuf->mapped) {
-      debug_flush_alert("Recursive map detected.", "Map",
+   mtx_lock(&fbuf->mutex);
+   map_sync = !(flags & PIPE_TRANSFER_UNSYNCHRONIZED);
+   persistent = !map_sync || fbuf->supports_persistent ||
+      !!(flags & PIPE_TRANSFER_PERSISTENT);
+
+   /* Recursive maps are allowed if previous maps are persistent,
+    * or if the current map is unsync. In other cases we might flush
+    * with unpersistent maps.
+    */
+   if (fbuf->has_sync_map && !map_sync) {
+      debug_flush_alert("Recursive sync map detected.", "Map",
                         2, fbuf->bt_depth, TRUE, TRUE, NULL);
       debug_flush_alert(NULL, "Previous map", 0, fbuf->bt_depth, FALSE,
-                        FALSE, fbuf->map_frame);
-   } else if (!(flags & PIPE_TRANSFER_UNSYNCHRONIZED) ||
-              !fbuf->supports_unsync) {
-      fbuf->mapped_sync = mapped_sync = TRUE;
+                        FALSE, fbuf->maps[fbuf->last_sync_map].frame);
    }
-   fbuf->map_frame = debug_flush_capture_frame(1, fbuf->bt_depth);
-   fbuf->mapped = TRUE;
-   pipe_mutex_unlock(fbuf->mutex);
 
-   if (mapped_sync) {
+   fbuf->maps[fbuf->map_count].frame =
+      debug_flush_capture_frame(1, fbuf->bt_depth);
+   fbuf->maps[fbuf->map_count].persistent = persistent;
+   if (!persistent) {
+      fbuf->has_sync_map = TRUE;
+      fbuf->last_sync_map = fbuf->map_count;
+   }
+
+   fbuf->map_count++;
+   assert(fbuf->map_count < DEBUG_FLUSH_MAP_DEPTH);
+
+   mtx_unlock(&fbuf->mutex);
+
+   if (!persistent) {
       struct debug_flush_ctx *fctx;
 
-      pipe_mutex_lock(list_mutex);
+      mtx_lock(&list_mutex);
       LIST_FOR_EACH_ENTRY(fctx, &ctx_list, head) {
          struct debug_flush_item *item =
             util_hash_table_get(fctx->ref_hash, fbuf);
@@ -244,7 +259,7 @@ debug_flush_map(struct debug_flush_buf *fbuf, unsigned flags)
                               FALSE, FALSE, item->ref_frame);
          }
       }
-      pipe_mutex_unlock(list_mutex);
+      mtx_unlock(&list_mutex);
    }
 }
 
@@ -254,18 +269,34 @@ debug_flush_unmap(struct debug_flush_buf *fbuf)
    if (!fbuf)
       return;
 
-   pipe_mutex_lock(fbuf->mutex);
-   if (!fbuf->mapped)
+   mtx_lock(&fbuf->mutex);
+   if (--fbuf->map_count < 0) {
       debug_flush_alert("Unmap not previously mapped detected.", "Map",
                         2, fbuf->bt_depth, FALSE, TRUE, NULL);
+   } else {
+      if (fbuf->has_sync_map && fbuf->last_sync_map == fbuf->map_count) {
+         int i = fbuf->map_count;
 
-   fbuf->mapped_sync = FALSE;
-   fbuf->mapped = FALSE;
-   FREE(fbuf->map_frame);
-   fbuf->map_frame = NULL;
-   pipe_mutex_unlock(fbuf->mutex);
+         fbuf->has_sync_map = FALSE;
+         while (i-- && !fbuf->has_sync_map) {
+            if (!fbuf->maps[i].persistent) {
+               fbuf->has_sync_map = TRUE;
+               fbuf->last_sync_map = i;
+            }
+         }
+         FREE(fbuf->maps[fbuf->map_count].frame);
+         fbuf->maps[fbuf->map_count].frame = NULL;
+      }
+   }
+   mtx_unlock(&fbuf->mutex);
 }
 
+
+/**
+ * Add the given buffer to the list of active buffers.  Active buffers
+ * are those which are referenced by the command buffer currently being
+ * constructed.
+ */
 void
 debug_flush_cb_reference(struct debug_flush_ctx *fctx,
                          struct debug_flush_buf *fbuf)
@@ -277,14 +308,14 @@ debug_flush_cb_reference(struct debug_flush_ctx *fctx,
 
    item = util_hash_table_get(fctx->ref_hash, fbuf);
 
-   pipe_mutex_lock(fbuf->mutex);
-   if (fbuf->mapped_sync) {
+   mtx_lock(&fbuf->mutex);
+   if (fbuf->map_count && fbuf->has_sync_map) {
       debug_flush_alert("Reference of mapped buffer detected.", "Reference",
                         2, fctx->bt_depth, TRUE, TRUE, NULL);
       debug_flush_alert(NULL, "Map", 0, fbuf->bt_depth, FALSE,
-                        FALSE, fbuf->map_frame);
+                        FALSE, fbuf->maps[fbuf->last_sync_map].frame);
    }
-   pipe_mutex_unlock(fbuf->mutex);
+   mtx_unlock(&fbuf->mutex);
 
    if (!item) {
       item = CALLOC_STRUCT(debug_flush_item);
@@ -292,10 +323,7 @@ debug_flush_cb_reference(struct debug_flush_ctx *fctx,
          debug_flush_buf_reference(&item->fbuf, fbuf);
          item->bt_depth = fctx->bt_depth;
          item->ref_frame = debug_flush_capture_frame(2, item->bt_depth);
-         if (util_hash_table_set(fctx->ref_hash, fbuf, item) != PIPE_OK) {
-            debug_flush_item_destroy(item);
-            goto out_no_item;
-         }
+         _mesa_hash_table_insert(fctx->ref_hash, fbuf, item);
          return;
       }
       goto out_no_item;
@@ -309,30 +337,35 @@ out_no_item:
 }
 
 static enum pipe_error
-debug_flush_might_flush_cb(void *key, void *value, void *data)
+debug_flush_might_flush_cb(UNUSED void *key, void *value, void *data)
 {
    struct debug_flush_item *item =
       (struct debug_flush_item *) value;
    struct debug_flush_buf *fbuf = item->fbuf;
-   const char *reason = (const char *) data;
-   char message[80];
 
-   util_snprintf(message, sizeof(message),
-                 "%s referenced mapped buffer detected.", reason);
+   mtx_lock(&fbuf->mutex);
+   if (fbuf->map_count && fbuf->has_sync_map) {
+      const char *reason = (const char *) data;
+      char message[80];
 
-   pipe_mutex_lock(fbuf->mutex);
-   if (fbuf->mapped_sync) {
+      snprintf(message, sizeof(message),
+               "%s referenced mapped buffer detected.", reason);
+
       debug_flush_alert(message, reason, 3, item->bt_depth, TRUE, TRUE, NULL);
       debug_flush_alert(NULL, "Map", 0, fbuf->bt_depth, TRUE, FALSE,
-                        fbuf->map_frame);
+                        fbuf->maps[fbuf->last_sync_map].frame);
       debug_flush_alert(NULL, "First reference", 0, item->bt_depth, FALSE,
                         FALSE, item->ref_frame);
    }
-   pipe_mutex_unlock(fbuf->mutex);
+   mtx_unlock(&fbuf->mutex);
 
    return PIPE_OK;
 }
 
+/**
+ * Called when we're about to possibly flush a command buffer.
+ * We check if any active buffers are in a mapped state.  If so, print an alert.
+ */
 void
 debug_flush_might_flush(struct debug_flush_ctx *fctx)
 {
@@ -345,7 +378,7 @@ debug_flush_might_flush(struct debug_flush_ctx *fctx)
 }
 
 static enum pipe_error
-debug_flush_flush_cb(void *key, void *value, void *data)
+debug_flush_flush_cb(UNUSED void *key, void *value, UNUSED void *data)
 {
    struct debug_flush_item *item =
       (struct debug_flush_item *) value;
@@ -356,6 +389,11 @@ debug_flush_flush_cb(void *key, void *value, void *data)
 }
 
 
+/**
+ * Called when we flush a command buffer.  Two things are done:
+ * 1. Check if any of the active buffers are currently mapped (alert if so).
+ * 2. Discard/unreference all the active buffers.
+ */
 void
 debug_flush_flush(struct debug_flush_ctx *fctx)
 {
@@ -368,7 +406,7 @@ debug_flush_flush(struct debug_flush_ctx *fctx)
    util_hash_table_foreach(fctx->ref_hash,
                            debug_flush_flush_cb,
                            NULL);
-   util_hash_table_clear(fctx->ref_hash);
+   _mesa_hash_table_clear(fctx->ref_hash, NULL);
 }
 
 void
@@ -381,8 +419,8 @@ debug_flush_ctx_destroy(struct debug_flush_ctx *fctx)
    util_hash_table_foreach(fctx->ref_hash,
                            debug_flush_flush_cb,
                            NULL);
-   util_hash_table_clear(fctx->ref_hash);
-   util_hash_table_destroy(fctx->ref_hash);
+   _mesa_hash_table_clear(fctx->ref_hash, NULL);
+   _mesa_hash_table_destroy(fctx->ref_hash, NULL);
    FREE(fctx);
 }
 #endif

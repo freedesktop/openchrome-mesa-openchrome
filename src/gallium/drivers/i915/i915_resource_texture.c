@@ -34,7 +34,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "util/u_inlines.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_rect.h"
@@ -89,25 +89,25 @@ static const int bottom_offsets[6] = {
    [PIPE_TEX_FACE_NEG_Z] = 16 + 5 * 8,
 };
 
-static INLINE unsigned
+static inline unsigned
 align_nblocksx(enum pipe_format format, unsigned width, unsigned align_to)
 {
    return align(util_format_get_nblocksx(format, width), align_to);
 }
 
-static INLINE unsigned
+static inline unsigned
 align_nblocksy(enum pipe_format format, unsigned width, unsigned align_to)
 {
    return align(util_format_get_nblocksy(format, width), align_to);
 }
 
-static INLINE unsigned
+static inline unsigned
 get_pot_stride(enum pipe_format format, unsigned width)
 {
    return util_next_power_of_two(util_format_get_stride(format, width));
 }
 
-static INLINE const char*
+static inline const char*
 get_tiling_string(enum i915_winsys_buffer_tile tile)
 {
    switch(tile) {
@@ -133,7 +133,7 @@ static void
 i915_texture_set_level_info(struct i915_texture *tex,
                             unsigned level, unsigned nr_images)
 {
-   assert(level < Elements(tex->nr_images));
+   assert(level < ARRAY_SIZE(tex->nr_images));
    assert(nr_images);
    assert(!tex->image_offset[level]);
 
@@ -452,7 +452,7 @@ i945_texture_layout_2d(struct i915_texture *tex)
 
    tex->stride = align(util_format_get_stride(pt->format, width), 4);
 
-   /* May need to adjust pitch to accomodate the placement of
+   /* May need to adjust pitch to accommodate the placement of
     * the 2nd mipmap level.  This occurs when the alignment
     * constraints of mipmap placement push the right edge of the
     * 2nd mipmap level out past the width of its parent.
@@ -681,7 +681,7 @@ i945_texture_layout(struct i915_texture * tex)
 
 
 
-static boolean
+static bool
 i915_texture_get_handle(struct pipe_screen * screen,
                         struct pipe_resource *texture,
                         struct winsys_handle *whandle)
@@ -705,7 +705,7 @@ i915_texture_destroy(struct pipe_screen *screen,
    if (tex->buffer)
       iws->buffer_destroy(iws, tex->buffer);
 
-   for (i = 0; i < Elements(tex->image_offset); i++)
+   for (i = 0; i < ARRAY_SIZE(tex->image_offset); i++)
       FREE(tex->image_offset[i]);
 
    FREE(tex);
@@ -721,14 +721,14 @@ i915_texture_transfer_map(struct pipe_context *pipe,
 {
    struct i915_context *i915 = i915_context(pipe);
    struct i915_texture *tex = i915_texture(resource);
-   struct i915_transfer *transfer = util_slab_alloc(&i915->texture_transfer_pool);
+   struct i915_transfer *transfer = slab_alloc_st(&i915->texture_transfer_pool);
    boolean use_staging_texture = FALSE;
    struct i915_winsys *iws = i915_screen(pipe->screen)->iws;
    enum pipe_format format = resource->format;
    unsigned offset;
    char *map;
 
-   if (transfer == NULL)
+   if (!transfer)
       return NULL;
 
    transfer->b.resource = resource;
@@ -774,7 +774,7 @@ i915_texture_transfer_map(struct pipe_context *pipe,
 
    map = iws->buffer_map(iws, tex->buffer,
                          (transfer->b.usage & PIPE_TRANSFER_WRITE) ? TRUE : FALSE);
-   if (map == NULL) {
+   if (!map) {
       pipe_resource_reference(&transfer->staging_texture, NULL);
       FREE(transfer);
       return NULL;
@@ -814,11 +814,11 @@ i915_texture_transfer_unmap(struct pipe_context *pipe,
       pipe_resource_reference(&itransfer->staging_texture, NULL);
    }
 
-   util_slab_free(&i915->texture_transfer_pool, itransfer);
+   slab_free_st(&i915->texture_transfer_pool, itransfer);
 }
 
 #if 0
-static void i915_transfer_inline_write( struct pipe_context *pipe,
+static void i915_texture_subdata(struct pipe_context *pipe,
                                  struct pipe_resource *resource,
                                  unsigned level,
                                  unsigned usage,
@@ -913,7 +913,6 @@ struct u_resource_vtbl i915_texture_vtbl =
    i915_texture_transfer_map,	      /* transfer_map */
    u_default_transfer_flush_region,   /* transfer_flush_region */
    i915_texture_transfer_unmap,	      /* transfer_unmap */
-   u_default_transfer_inline_write    /* transfer_inline_write */
 };
 
 
@@ -989,7 +988,7 @@ i915_texture_from_handle(struct pipe_screen * screen,
 
    assert(screen);
 
-   buffer = iws->buffer_from_handle(iws, whandle, &tiling, &stride);
+   buffer = iws->buffer_from_handle(iws, whandle, template->height0, &tiling, &stride);
 
    /* Only supports one type */
    if ((template->target != PIPE_TEXTURE_2D &&

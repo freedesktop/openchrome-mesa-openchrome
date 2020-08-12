@@ -27,28 +27,32 @@ ifeq ($(LOCAL_MODULE_CLASS),)
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
 endif
 
-intermediates := $(call local-intermediates-dir)
+intermediates := $(call local-generated-sources-dir)
 
 # This is the list of auto-generated files: sources and headers
 sources := \
 	main/enums.c \
 	main/api_exec.c \
 	main/dispatch.h \
+	main/format_fallback.c \
+	main/format_pack.c \
+	main/format_unpack.c \
+	main/format_info.h \
 	main/remap_helper.h \
-	main/get_hash.h
+	main/get_hash.h \
+	main/marshal_generated0.c \
+	main/marshal_generated1.c \
+	main/marshal_generated2.c \
+	main/marshal_generated3.c \
+	main/marshal_generated4.c \
+	main/marshal_generated5.c \
+	main/marshal_generated6.c \
+	main/marshal_generated7.c \
+	main/marshal_generated.h
 
 LOCAL_SRC_FILES := $(filter-out $(sources), $(LOCAL_SRC_FILES))
 
 LOCAL_C_INCLUDES += $(intermediates)/main
-
-ifeq ($(strip $(MESA_ENABLE_ASM)),true)
-ifeq ($(TARGET_ARCH),x86)
-sources += x86/matypes.h
-LOCAL_C_INCLUDES += $(intermediates)/x86
-endif
-endif
-
-sources += main/git_sha1.h
 
 sources := $(addprefix $(intermediates)/, $(sources))
 
@@ -66,26 +70,6 @@ define es-gen
 	$(hide) $(PRIVATE_SCRIPT) $(1) $(PRIVATE_XML) > $@
 endef
 
-$(intermediates)/main/git_sha1.h:
-	@mkdir -p $(dir $@)
-	@echo "GIT-SHA1: $(PRIVATE_MODULE) <= git"
-	$(hide) touch $@
-	$(hide) if which git > /dev/null; then \
-			git --git-dir $(PRIVATE_PATH)/../../.git log -n 1 --oneline | \
-			sed 's/^\([^ ]*\) .*/#define MESA_GIT_SHA1 "git-\1"/' \
-			> $@; \
-		fi
-
-matypes_deps := \
-	$(BUILD_OUT_EXECUTABLES)/mesa_gen_matypes$(BUILD_EXECUTABLE_SUFFIX) \
-	$(LOCAL_PATH)/main/mtypes.h \
-	$(LOCAL_PATH)/tnl/t_context.h
-
-$(intermediates)/x86/matypes.h: $(matypes_deps) 
-	@mkdir -p $(dir $@)
-	@echo "MATYPES: $(PRIVATE_MODULE) <= $(notdir $@)"
-	$(hide) $< > $@
-
 $(intermediates)/main/dispatch.h: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_table.py
 $(intermediates)/main/dispatch.h: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml
 
@@ -99,7 +83,7 @@ $(intermediates)/main/remap_helper.h: $(dispatch_deps)
 	$(call es-gen, $*)
 
 $(intermediates)/main/enums.c: PRIVATE_SCRIPT :=$(MESA_PYTHON2) $(glapi)/gl_enums.py
-$(intermediates)/main/enums.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml
+$(intermediates)/main/enums.c: PRIVATE_XML := -f $(glapi)/../registry/gl.xml
 
 $(intermediates)/main/enums.c: $(dispatch_deps)
 	$(call es-gen)
@@ -110,11 +94,78 @@ $(intermediates)/main/api_exec.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml
 $(intermediates)/main/api_exec.c: $(dispatch_deps)
 	$(call es-gen)
 
+$(intermediates)/main/marshal_generated0.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated0.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 0 -n 8
+
+$(intermediates)/main/marshal_generated0.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated1.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated1.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 1 -n 8
+
+$(intermediates)/main/marshal_generated1.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated2.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated2.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 2 -n 8
+
+$(intermediates)/main/marshal_generated2.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated3.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated3.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 3 -n 8
+
+$(intermediates)/main/marshal_generated3.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated4.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated4.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 4 -n 8
+
+$(intermediates)/main/marshal_generated4.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated5.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated5.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 5 -n 8
+
+$(intermediates)/main/marshal_generated5.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated6.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated6.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 6 -n 8
+
+$(intermediates)/main/marshal_generated6.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated7.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal.py
+$(intermediates)/main/marshal_generated7.c: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml -i 7 -n 8
+
+$(intermediates)/main/marshal_generated7.c: $(dispatch_deps)
+	$(call es-gen)
+
+$(intermediates)/main/marshal_generated.h: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(glapi)/gl_marshal_h.py
+$(intermediates)/main/marshal_generated.h: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml
+
+$(intermediates)/main/marshal_generated.h: $(dispatch_deps)
+	$(call es-gen)
+
 GET_HASH_GEN := $(LOCAL_PATH)/main/get_hash_generator.py
 
+$(intermediates)/main/get_hash.h: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(GET_HASH_GEN)
+$(intermediates)/main/get_hash.h: PRIVATE_XML := -f $(glapi)/gl_and_es_API.xml
 $(intermediates)/main/get_hash.h: $(glapi)/gl_and_es_API.xml \
                $(LOCAL_PATH)/main/get_hash_params.py $(GET_HASH_GEN)
-	@$(MESA_PYTHON2) $(GET_HASH_GEN) -f $< > $@
+	$(call es-gen)
+
+FORMAT_FALLBACK := $(LOCAL_PATH)/main/format_fallback.py
+format_fallback_deps := \
+	$(LOCAL_PATH)/main/formats.csv \
+	$(LOCAL_PATH)/main/format_parser.py \
+	$(FORMAT_FALLBACK)
+
+$(intermediates)/main/format_fallback.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(FORMAT_FALLBACK)
+$(intermediates)/main/format_fallback.c: PRIVATE_XML :=
+$(intermediates)/main/format_fallback.c: $(format_fallback_deps)
+	$(call es-gen, $< /dev/stdout)
 
 FORMAT_INFO := $(LOCAL_PATH)/main/format_info.py
 format_info_deps := \
@@ -122,5 +173,29 @@ format_info_deps := \
 	$(LOCAL_PATH)/main/format_parser.py \
 	$(FORMAT_INFO)
 
-$(intermediates)/main/format_info.c: $(format_info_deps)
-	@$(MESA_PYTHON2) $(FORMAT_INFO) $< > $@
+$(intermediates)/main/format_info.h: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(FORMAT_INFO)
+$(intermediates)/main/format_info.h: PRIVATE_XML :=
+$(intermediates)/main/format_info.h: $(format_info_deps)
+	$(call es-gen, $<)
+
+FORMAT_PACK := $(LOCAL_PATH)/main/format_pack.py
+format_pack_deps := \
+	$(LOCAL_PATH)/main/formats.csv \
+	$(LOCAL_PATH)/main/format_parser.py \
+	$(FORMAT_PACK)
+
+$(intermediates)/main/format_pack.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(FORMAT_PACK)
+$(intermediates)/main/format_pack.c: PRIVATE_XML :=
+$(intermediates)/main/format_pack.c: $(format_pack_deps)
+	$(call es-gen, $<)
+
+FORMAT_UNPACK := $(LOCAL_PATH)/main/format_unpack.py
+format_unpack_deps := \
+	$(LOCAL_PATH)/main/formats.csv \
+	$(LOCAL_PATH)/main/format_parser.py \
+	$(FORMAT_UNPACK)
+
+$(intermediates)/main/format_unpack.c: PRIVATE_SCRIPT := $(MESA_PYTHON2) $(FORMAT_UNPACK)
+$(intermediates)/main/format_unpack.c: PRIVATE_XML :=
+$(intermediates)/main/format_unpack.c: $(format_unpack_deps)
+	$(call es-gen, $<)

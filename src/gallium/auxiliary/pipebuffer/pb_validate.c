@@ -37,6 +37,7 @@
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
 #include "util/u_debug.h"
+#include "util/u_hash_table.h"
 
 #include "pb_buffer.h"
 #include "pb_validate.h"
@@ -63,25 +64,33 @@ struct pb_validate
 enum pipe_error
 pb_validate_add_buffer(struct pb_validate *vl,
                        struct pb_buffer *buf,
-                       unsigned flags)
+                       enum pb_usage_flags flags,
+                       struct hash_table *ht,
+                       boolean *already_present)
 {
    assert(buf);
-   if(!buf)
+   *already_present = FALSE;
+   if (!buf)
       return PIPE_ERROR;
 
    assert(flags & PB_USAGE_GPU_READ_WRITE);
    assert(!(flags & ~PB_USAGE_GPU_READ_WRITE));
    flags &= PB_USAGE_GPU_READ_WRITE;
 
-   /* We only need to store one reference for each buffer, so avoid storing
-    * consecutive references for the same buffer. It might not be the most 
-    * common pattern, but it is easy to implement.
-    */
-   if(vl->used && vl->entries[vl->used - 1].buf == buf) {
-      vl->entries[vl->used - 1].flags |= flags;
-      return PIPE_OK;
+   if (ht) {
+      unsigned entry_idx = (unsigned)(uintptr_t)util_hash_table_get(ht, buf);
+
+      if (entry_idx) {
+         struct pb_validate_entry *entry = &vl->entries[entry_idx - 1];
+
+         assert(entry->buf == buf);
+         entry->flags |= flags;
+         *already_present = TRUE;
+
+         return PIPE_OK;
+      }
    }
-   
+
    /* Grow the table */
    if(vl->used == vl->size) {
       unsigned new_size;
@@ -94,7 +103,7 @@ pb_validate_add_buffer(struct pb_validate *vl,
       new_entries = (struct pb_validate_entry *)REALLOC(vl->entries,
                                                         vl->size*sizeof(struct pb_validate_entry),
                                                         new_size*sizeof(struct pb_validate_entry));
-      if(!new_entries)
+      if (!new_entries)
          return PIPE_ERROR_OUT_OF_MEMORY;
       
       memset(new_entries + vl->size, 0, (new_size - vl->size)*sizeof(struct pb_validate_entry));
@@ -107,7 +116,10 @@ pb_validate_add_buffer(struct pb_validate *vl,
    pb_reference(&vl->entries[vl->used].buf, buf);
    vl->entries[vl->used].flags = flags;
    ++vl->used;
-   
+
+   if (ht)
+      _mesa_hash_table_insert(ht, buf, (void *) (uintptr_t) vl->used);
+
    return PIPE_OK;
 }
 
@@ -177,7 +189,7 @@ pb_validate_create()
    struct pb_validate *vl;
    
    vl = CALLOC_STRUCT(pb_validate);
-   if(!vl)
+   if (!vl)
       return NULL;
    
    vl->size = PB_VALIDATE_INITIAL_SIZE;

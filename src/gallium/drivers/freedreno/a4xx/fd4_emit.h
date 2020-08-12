@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
  *
@@ -34,31 +32,30 @@
 #include "freedreno_context.h"
 #include "fd4_format.h"
 #include "fd4_program.h"
-#include "ir3_shader.h"
+#include "ir3_gallium.h"
 
 struct fd_ringbuffer;
-enum adreno_state_block;
-
-void fd4_emit_constant(struct fd_ringbuffer *ring,
-		enum adreno_state_block sb,
-		uint32_t regid, uint32_t offset, uint32_t sizedwords,
-		const uint32_t *dwords, struct pipe_resource *prsc);
 
 void fd4_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
-		struct pipe_surface *psurf);
+		unsigned nr_bufs, struct pipe_surface **bufs);
 
 /* grouped together emit-state for prog/vertex/state emit: */
 struct fd4_emit {
+	struct pipe_debug_callback *debug;
 	const struct fd_vertex_state *vtx;
 	const struct fd_program_stateobj *prog;
 	const struct pipe_draw_info *info;
+	bool binning_pass;
 	struct ir3_shader_key key;
-	enum a4xx_color_fmt format;
-	uint32_t dirty;
+	enum fd_dirty_3d_state dirty;
+
+	uint32_t sprite_coord_enable;  /* bitmask */
+	bool sprite_coord_mode;
 	bool rasterflat;
+	bool no_decode_srgb;
 
 	/* cached to avoid repeated lookups of same variants: */
-	struct ir3_shader_variant *vp, *fp;
+	const struct ir3_shader_variant *vs, *fs;
 	/* TODO: other shader stages.. */
 };
 
@@ -69,24 +66,32 @@ static inline enum a4xx_color_fmt fd4_emit_format(struct pipe_surface *surf)
 	return fd4_pipe2color(surf->format);
 }
 
-static inline struct ir3_shader_variant *
+static inline const struct ir3_shader_variant *
 fd4_emit_get_vp(struct fd4_emit *emit)
 {
-	if (!emit->vp) {
-		struct fd4_shader_stateobj *so = emit->prog->vp;
-		emit->vp = ir3_shader_variant(so->shader, emit->key);
+	if (!emit->vs) {
+		struct ir3_shader *shader = emit->prog->vs;
+		emit->vs = ir3_shader_variant(shader, emit->key,
+				emit->binning_pass, emit->debug);
 	}
-	return emit->vp;
+	return emit->vs;
 }
 
-static inline struct ir3_shader_variant *
+static inline const struct ir3_shader_variant *
 fd4_emit_get_fp(struct fd4_emit *emit)
 {
-	if (!emit->fp) {
-		struct fd4_shader_stateobj *so = emit->prog->fp;
-		emit->fp = ir3_shader_variant(so->shader, emit->key);
+	if (!emit->fs) {
+		if (emit->binning_pass) {
+			/* use dummy stateobj to simplify binning vs non-binning: */
+			static const struct ir3_shader_variant binning_fs = {};
+			emit->fs = &binning_fs;
+		} else {
+			struct ir3_shader *shader = emit->prog->fs;
+			emit->fs = ir3_shader_variant(shader, emit->key,
+					false, emit->debug);
+		}
 	}
-	return emit->fp;
+	return emit->fs;
 }
 
 void fd4_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd4_emit *emit);
@@ -94,6 +99,15 @@ void fd4_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd4_emit *emit);
 void fd4_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		struct fd4_emit *emit);
 
-void fd4_emit_restore(struct fd_context *ctx);
+void fd4_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring);
+
+void fd4_emit_init_screen(struct pipe_screen *pscreen);
+void fd4_emit_init(struct pipe_context *pctx);
+
+static inline void
+fd4_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
+{
+	__OUT_IB(ring, true, target);
+}
 
 #endif /* FD4_EMIT_H */

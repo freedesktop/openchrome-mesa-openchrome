@@ -31,7 +31,7 @@
 
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 
 #include "draw/draw_context.h"
 
@@ -41,7 +41,7 @@
 #include "sp_tex_sample.h"
 #include "sp_tex_tile_cache.h"
 #include "sp_screen.h"
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 
 /**
@@ -49,7 +49,7 @@
  */
 static void
 softpipe_bind_sampler_states(struct pipe_context *pipe,
-                             unsigned shader,
+                             enum pipe_shader_type shader,
                              unsigned start,
                              unsigned num,
                              void **samplers)
@@ -58,7 +58,7 @@ softpipe_bind_sampler_states(struct pipe_context *pipe,
    unsigned i;
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(start + num <= Elements(softpipe->samplers[shader]));
+   assert(start + num <= ARRAY_SIZE(softpipe->samplers[shader]));
 
    draw_flush(softpipe->draw);
 
@@ -97,7 +97,7 @@ softpipe_sampler_view_destroy(struct pipe_context *pipe,
 
 void
 softpipe_set_sampler_views(struct pipe_context *pipe,
-                           unsigned shader,
+                           enum pipe_shader_type shader,
                            unsigned start,
                            unsigned num,
                            struct pipe_sampler_view **views)
@@ -106,7 +106,7 @@ softpipe_set_sampler_views(struct pipe_context *pipe,
    uint i;
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(start + num <= Elements(softpipe->sampler_views[shader]));
+   assert(start + num <= ARRAY_SIZE(softpipe->sampler_views[shader]));
 
    draw_flush(softpipe->draw);
 
@@ -127,6 +127,7 @@ softpipe_set_sampler_views(struct pipe_context *pipe,
       if (sp_sviewsrc) {
          memcpy(sp_sviewdst, sp_sviewsrc, sizeof(*sp_sviewsrc));
          sp_sviewdst->compute_lambda = softpipe_get_lambda_func(&sp_sviewdst->base, shader);
+         sp_sviewdst->compute_lambda_from_grad = softpipe_get_lambda_from_grad_func(&sp_sviewdst->base, shader);
          sp_sviewdst->cache = softpipe->tex_cache[shader][start + i];
       }
       else {
@@ -167,7 +168,7 @@ prepare_shader_sampling(
    struct softpipe_context *sp,
    unsigned num,
    struct pipe_sampler_view **views,
-   unsigned shader_type,
+   enum pipe_shader_type shader_type,
    struct pipe_resource *mapped_tex[PIPE_MAX_SHADER_SAMPLER_VIEWS])
 {
 
@@ -181,8 +182,8 @@ prepare_shader_sampling(
    if (!num)
       return;
 
-   for (i = 0; i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
-      struct pipe_sampler_view *view = i < num ? views[i] : NULL;
+   for (i = 0; i < num; i++) {
+      struct pipe_sampler_view *view = views[i];
 
       if (view) {
          struct pipe_resource *tex = view->texture;
@@ -199,10 +200,10 @@ prepare_shader_sampling(
 
          if (!sp_tex->dt) {
             /* regular texture - setup array of mipmap level offsets */
-            struct pipe_resource *res = view->texture;
+            ASSERTED struct pipe_resource *res = view->texture;
             int j;
 
-            if (res->target != PIPE_BUFFER) {
+            if (view->target != PIPE_BUFFER) {
                first_level = view->u.tex.first_level;
                last_level = view->u.tex.last_level;
                assert(first_level <= last_level);
@@ -214,15 +215,17 @@ prepare_shader_sampling(
                   row_stride[j] = sp_tex->stride[j];
                   img_stride[j] = sp_tex->img_stride[j];
                }
-               if (res->target == PIPE_TEXTURE_1D_ARRAY ||
-                   res->target == PIPE_TEXTURE_2D_ARRAY ||
-                   res->target == PIPE_TEXTURE_CUBE_ARRAY) {
+               if (tex->target == PIPE_TEXTURE_1D_ARRAY ||
+                   tex->target == PIPE_TEXTURE_2D_ARRAY ||
+                   tex->target == PIPE_TEXTURE_CUBE ||
+                   tex->target == PIPE_TEXTURE_CUBE_ARRAY) {
                   num_layers = view->u.tex.last_layer - view->u.tex.first_layer + 1;
                   for (j = first_level; j <= last_level; j++) {
                      mip_offsets[j] += view->u.tex.first_layer *
                                        sp_tex->img_stride[j];
                   }
-                  if (res->target == PIPE_TEXTURE_CUBE_ARRAY) {
+                  if (view->target == PIPE_TEXTURE_CUBE ||
+                      view->target == PIPE_TEXTURE_CUBE_ARRAY) {
                      assert(num_layers % 6 == 0);
                   }
                   assert(view->u.tex.first_layer <= view->u.tex.last_layer);
@@ -238,11 +241,9 @@ prepare_shader_sampling(
                img_stride[0] = 0;
 
                /* everything specified in number of elements here. */
-               width0 = view->u.buf.last_element - view->u.buf.first_element + 1;
-               addr = (uint8_t *)addr + view->u.buf.first_element *
-                               view_blocksize;
-               assert(view->u.buf.first_element <= view->u.buf.last_element);
-               assert(view->u.buf.last_element * view_blocksize < res->width0);
+               width0 = view->u.buf.size / view_blocksize;
+               addr = (uint8_t *)addr + view->u.buf.offset;
+               assert(view->u.buf.offset + view->u.buf.size <= res->width0);
             }
          }
          else {
@@ -263,7 +264,7 @@ prepare_shader_sampling(
                                  shader_type,
                                  i,
                                  width0, tex->height0, num_layers,
-                                 first_level, last_level,
+                                 first_level, last_level, 0, 0,
                                  addr,
                                  row_stride, img_stride, mip_offsets);
       }
@@ -287,7 +288,7 @@ void
 softpipe_cleanup_vertex_sampling(struct softpipe_context *ctx)
 {
    unsigned i;
-   for (i = 0; i < Elements(ctx->mapped_vs_tex); i++) {
+   for (i = 0; i < ARRAY_SIZE(ctx->mapped_vs_tex); i++) {
       pipe_resource_reference(&ctx->mapped_vs_tex[i], NULL);
    }
 }
@@ -309,7 +310,7 @@ void
 softpipe_cleanup_geometry_sampling(struct softpipe_context *ctx)
 {
    unsigned i;
-   for (i = 0; i < Elements(ctx->mapped_gs_tex); i++) {
+   for (i = 0; i < ARRAY_SIZE(ctx->mapped_gs_tex); i++) {
       pipe_resource_reference(&ctx->mapped_gs_tex[i], NULL);
    }
 }

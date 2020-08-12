@@ -30,6 +30,7 @@
 
 #include "pipe/p_compiler.h"
 #include "util/u_math.h"
+#include "util/half_float.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,8 +44,14 @@ extern "C" {
  *  https://gist.github.com/2144712
  */
 
-static INLINE uint16_t
+static inline uint16_t
 util_float_to_half(float f)
+{
+   return _mesa_float_to_half(f);
+}
+
+static inline uint16_t
+util_float_to_half_rtz(float f)
 {
    uint32_t sign_mask  = 0x80000000;
    uint32_t round_mask = ~0xfff;
@@ -74,7 +81,11 @@ util_float_to_half(float f)
       f32.ui &= round_mask;
       f32.f  *= magic.f;
       f32.ui -= round_mask;
-
+      /*
+       * XXX: The magic mul relies on denorms being available, otherwise
+       * all f16 denorms get flushed to zero - hence when this is used
+       * for tgsi_exec in softpipe we won't get f16 denorms.
+       */
       /*
        * Clamp to max finite value if overflowed.
        * OpenGL has completely undefined rounding behavior for float to
@@ -96,7 +107,7 @@ util_float_to_half(float f)
    return f16;
 }
 
-static INLINE float
+static inline float
 util_half_to_float(uint16_t f16)
 {
    union fi infnan;
@@ -112,13 +123,14 @@ util_half_to_float(uint16_t f16)
 
    /* Adjust */
    f32.f *= magic.f;
+   /* XXX: The magic mul relies on denorms being available */
 
    /* Inf / NaN */
    if (f32.f >= infnan.f)
       f32.ui |= 0xff << 23;
 
    /* Sign */
-   f32.ui |= (f16 & 0x8000) << 16;
+   f32.ui |= (uint32_t)(f16 & 0x8000) << 16;
 
    return f32.f;
 }

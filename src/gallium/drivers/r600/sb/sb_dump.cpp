@@ -354,7 +354,9 @@ void dump::dump_op(node &n, const char *name) {
 					"WRITE_IND_ACK"};
 			sblog << "  " << exp_type[c->bc.type] << " " << c->bc.array_base
 					<< "   ES:" << c->bc.elem_size;
-			has_dst = false;
+			if (!(c->bc.op_ptr->flags & CF_EMIT)) {
+				has_dst = false;
+			}
 		}
 	}
 
@@ -365,7 +367,12 @@ void dump::dump_op(node &n, const char *name) {
 		sblog << ",       ";
 	}
 
-	dump_vec(n.src);
+   if (n.subtype == NST_FETCH_INST) {
+      fetch_node *f = static_cast<fetch_node*>(&n);
+      if (f->bc.indexed)
+         dump_vec(n.src);
+   } else
+      dump_vec(n.src);
 }
 
 void dump::dump_set(shader &sh, val_set& v) {
@@ -467,6 +474,7 @@ void dump::dump_op(node* n) {
 	case NST_ALU_CLAUSE:
 	case NST_TEX_CLAUSE:
 	case NST_VTX_CLAUSE:
+	case NST_GDS_CLAUSE:
 		dump_op(*n, static_cast<cf_node*>(n)->bc.op_ptr->name);
 		break;
 	case NST_ALU_PACKED_INST:

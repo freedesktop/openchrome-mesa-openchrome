@@ -28,7 +28,7 @@
 /**
  * @file
  * Copy/blit pixel rect between surfaces
- *  
+ *
  * @author Brian Paul
  */
 
@@ -42,7 +42,7 @@
 
 #include "util/u_blit.h"
 #include "util/u_draw_quad.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_sampler.h"
@@ -62,10 +62,10 @@ struct blit_state
    struct pipe_rasterizer_state rasterizer;
    struct pipe_sampler_state sampler;
    struct pipe_viewport_state viewport;
-   struct pipe_vertex_element velem[2];
+   struct cso_velems_state velem;
 
    void *vs;
-   void *fs[PIPE_MAX_TEXTURE_TYPES][TGSI_WRITEMASK_XYZW + 1];
+   void *fs[PIPE_MAX_TEXTURE_TYPES][4];
 
    struct pipe_resource *vbuf;  /**< quad vertices */
    unsigned vbuf_slot;
@@ -98,7 +98,8 @@ util_create_blit(struct pipe_context *pipe, struct cso_context *cso)
    ctx->rasterizer.cull_face = PIPE_FACE_NONE;
    ctx->rasterizer.half_pixel_center = 1;
    ctx->rasterizer.bottom_edge_rule = 1;
-   ctx->rasterizer.depth_clip = 1;
+   ctx->rasterizer.depth_clip_near = 1;
+   ctx->rasterizer.depth_clip_far = 1;
 
    /* samplers */
    ctx->sampler.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
@@ -109,11 +110,12 @@ util_create_blit(struct pipe_context *pipe, struct cso_context *cso)
    ctx->sampler.mag_img_filter = 0; /* set later */
 
    /* vertex elements state */
+   ctx->velem.count = 2;
    for (i = 0; i < 2; i++) {
-      ctx->velem[i].src_offset = i * 4 * sizeof(float);
-      ctx->velem[i].instance_divisor = 0;
-      ctx->velem[i].vertex_buffer_index = cso_get_aux_vertex_buffer_slot(cso);
-      ctx->velem[i].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+      ctx->velem.velems[i].src_offset = i * 4 * sizeof(float);
+      ctx->velem.velems[i].instance_divisor = 0;
+      ctx->velem.velems[i].vertex_buffer_index = 0;
+      ctx->velem.velems[i].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
    }
 
    ctx->vbuf = NULL;
@@ -140,8 +142,8 @@ util_destroy_blit(struct blit_state *ctx)
    if (ctx->vs)
       pipe->delete_vs_state(pipe, ctx->vs);
 
-   for (i = 0; i < Elements(ctx->fs); i++) {
-      for (j = 0; j < Elements(ctx->fs[i]); j++) {
+   for (i = 0; i < ARRAY_SIZE(ctx->fs); i++) {
+      for (j = 0; j < ARRAY_SIZE(ctx->fs[i]); j++) {
          if (ctx->fs[i][j])
             pipe->delete_fs_state(pipe, ctx->fs[i][j]);
       }
@@ -156,35 +158,66 @@ util_destroy_blit(struct blit_state *ctx)
 /**
  * Helper function to set the fragment shaders.
  */
-static INLINE void
-set_fragment_shader(struct blit_state *ctx, uint writemask,
+static inline void
+set_fragment_shader(struct blit_state *ctx,
+                    enum pipe_format format,
+                    boolean src_xrbias,
                     enum pipe_texture_target pipe_tex)
 {
-   if (!ctx->fs[pipe_tex][writemask]) {
-      unsigned tgsi_tex = util_pipe_tex_to_tgsi_tex(pipe_tex, 0);
+   enum tgsi_return_type stype;
+   unsigned idx;
 
-      ctx->fs[pipe_tex][writemask] =
-         util_make_fragment_tex_shader_writemask(ctx->pipe, tgsi_tex,
-                                                 TGSI_INTERPOLATE_LINEAR,
-                                                 writemask);
+   if (util_format_is_pure_uint(format)) {
+      stype = TGSI_RETURN_TYPE_UINT;
+      idx = 0;
+   } else if (util_format_is_pure_sint(format)) {
+      stype = TGSI_RETURN_TYPE_SINT;
+      idx = 1;
+   } else {
+      stype = TGSI_RETURN_TYPE_FLOAT;
+      idx = 2;
    }
 
-   cso_set_fragment_shader_handle(ctx->cso, ctx->fs[pipe_tex][writemask]);
+   if (src_xrbias) {
+      assert(stype == TGSI_RETURN_TYPE_FLOAT);
+      idx = 3;
+      if (!ctx->fs[pipe_tex][idx]) {
+         enum tgsi_texture_type tgsi_tex =
+            util_pipe_tex_to_tgsi_tex(pipe_tex, 0);
+         ctx->fs[pipe_tex][idx] =
+            util_make_fragment_tex_shader_xrbias(ctx->pipe, tgsi_tex);
+      }
+   }
+   else if (!ctx->fs[pipe_tex][idx]) {
+      enum tgsi_texture_type tgsi_tex = util_pipe_tex_to_tgsi_tex(pipe_tex, 0);
+
+      /* OpenGL does not allow blits from signed to unsigned integer
+       * or vice versa. */
+      ctx->fs[pipe_tex][idx] =
+         util_make_fragment_tex_shader_writemask(ctx->pipe, tgsi_tex,
+                                                 TGSI_INTERPOLATE_LINEAR,
+                                                 TGSI_WRITEMASK_XYZW,
+                                                 stype, stype, false, false);
+   }
+
+   cso_set_fragment_shader_handle(ctx->cso, ctx->fs[pipe_tex][idx]);
 }
 
 
 /**
  * Helper function to set the vertex shader.
  */
-static INLINE void
+static inline void
 set_vertex_shader(struct blit_state *ctx)
 {
    /* vertex shader - still required to provide the linkage between
     * fragment shader input semantics and vertex_element/buffers.
     */
    if (!ctx->vs) {
-      const uint semantic_names[] = { TGSI_SEMANTIC_POSITION,
-                                      TGSI_SEMANTIC_GENERIC };
+      const enum tgsi_semantic semantic_names[] = {
+         TGSI_SEMANTIC_POSITION,
+         TGSI_SEMANTIC_GENERIC
+      };
       const uint semantic_indexes[] = { 0, 0 };
       ctx->vs = util_make_vertex_passthrough_shader(ctx->pipe, 2,
                                                     semantic_names,
@@ -199,7 +232,7 @@ set_vertex_shader(struct blit_state *ctx)
  * Get offset of next free slot in vertex buffer for quad vertices.
  */
 static unsigned
-get_next_slot( struct blit_state *ctx )
+get_next_slot(struct blit_state *ctx)
 {
    const unsigned max_slots = 4096 / sizeof ctx->vertices;
 
@@ -214,7 +247,7 @@ get_next_slot( struct blit_state *ctx )
                                      PIPE_USAGE_STREAM,
                                      max_slots * sizeof ctx->vertices);
    }
-   
+
    return ctx->vbuf_slot++ * sizeof ctx->vertices;
 }
 
@@ -230,7 +263,7 @@ get_next_slot( struct blit_state *ctx )
  */
 static unsigned
 setup_vertex_data_tex(struct blit_state *ctx,
-                      unsigned src_target,
+                      enum pipe_texture_target src_target,
                       unsigned src_face,
                       float x0, float y0, float x1, float y1,
                       float s0, float t0, float s1, float t1,
@@ -269,14 +302,15 @@ setup_vertex_data_tex(struct blit_state *ctx,
    if (src_target == PIPE_TEXTURE_CUBE ||
        src_target == PIPE_TEXTURE_CUBE_ARRAY) {
       /* Map cubemap texture coordinates inplace. */
-      const unsigned stride = sizeof ctx->vertices[0] / sizeof ctx->vertices[0][0][0];
+      const unsigned stride =
+         sizeof ctx->vertices[0] / sizeof ctx->vertices[0][0][0];
       util_map_texcoords2d_onto_cubemap(src_face,
                                         &ctx->vertices[0][1][0], stride,
                                         &ctx->vertices[0][1][0], stride,
                                         TRUE);
    }
 
-   offset = get_next_slot( ctx );
+   offset = get_next_slot(ctx);
 
    if (ctx->vbuf) {
       pipe_buffer_write_nooverlap(ctx->pipe, ctx->vbuf,
@@ -296,16 +330,16 @@ regions_overlap(int srcX0, int srcY0,
                 int dstX0, int dstY0,
                 int dstX1, int dstY1)
 {
-   if (MAX2(srcX0, srcX1) < MIN2(dstX0, dstX1))
+   if (MAX2(srcX0, srcX1) <= MIN2(dstX0, dstX1))
       return FALSE; /* src completely left of dst */
 
-   if (MAX2(dstX0, dstX1) < MIN2(srcX0, srcX1))
+   if (MAX2(dstX0, dstX1) <= MIN2(srcX0, srcX1))
       return FALSE; /* dst completely left of src */
 
-   if (MAX2(srcY0, srcY1) < MIN2(dstY0, dstY1))
+   if (MAX2(srcY0, srcY1) <= MIN2(dstY0, dstY1))
       return FALSE; /* src completely above dst */
 
-   if (MAX2(dstY0, dstY1) < MIN2(srcY0, srcY1))
+   if (MAX2(dstY0, dstY1) <= MIN2(srcY0, srcY1))
       return FALSE; /* dst completely above src */
 
    return TRUE; /* some overlap */
@@ -351,7 +385,8 @@ util_blit_pixels(struct blit_state *ctx,
                  struct pipe_surface *dst,
                  int dstX0, int dstY0,
                  int dstX1, int dstY1,
-                 float z, uint filter,
+                 ASSERTED float z,
+                 enum pipe_tex_filter filter,
                  uint writemask)
 {
    struct pipe_context *pipe = ctx->pipe;
@@ -471,8 +506,8 @@ util_blit_pixels(struct blit_state *ctx,
  * The sampler view's first_layer indicate the layer to use, but for
  * cube maps it must point to the first face.  Face is passed in src_face.
  *
- * The main advantage over util_blit_pixels is that it allows to specify swizzles in
- * pipe_sampler_view::swizzle_?.
+ * The main advantage over util_blit_pixels is that it allows to specify
+ * swizzles in pipe_sampler_view::swizzle_?.
  *
  * But there is no control over blitting Z and/or stencil.
  */
@@ -485,7 +520,8 @@ util_blit_pixels_tex(struct blit_state *ctx,
                      struct pipe_surface *dst,
                      int dstX0, int dstY0,
                      int dstX1, int dstY1,
-                     float z, uint filter)
+                     float z, enum pipe_tex_filter filter,
+                     boolean src_xrbias)
 {
    boolean normalized = src_sampler_view->texture->target != PIPE_TEXTURE_RECT;
    struct pipe_framebuffer_state fb;
@@ -505,8 +541,7 @@ util_blit_pixels_tex(struct blit_state *ctx,
    t0 = (float) srcY0;
    t1 = (float) srcY1;
 
-   if(normalized)
-   {
+   if (normalized) {
       /* normalize according to the mipmap level's size */
       int level = src_sampler_view->u.tex.first_level;
       float w = (float) u_minify(tex->width0, level);
@@ -520,24 +555,28 @@ util_blit_pixels_tex(struct blit_state *ctx,
    assert(ctx->pipe->screen->is_format_supported(ctx->pipe->screen, dst->format,
                                                  PIPE_TEXTURE_2D,
                                                  dst->texture->nr_samples,
+                                                 dst->texture->nr_storage_samples,
                                                  PIPE_BIND_RENDER_TARGET));
 
    /* save state (restored below) */
-   cso_save_blend(ctx->cso);
-   cso_save_depth_stencil_alpha(ctx->cso);
-   cso_save_rasterizer(ctx->cso);
-   cso_save_sample_mask(ctx->cso);
-   cso_save_min_samples(ctx->cso);
-   cso_save_samplers(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_save_sampler_views(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_save_stream_outputs(ctx->cso);
-   cso_save_viewport(ctx->cso);
-   cso_save_framebuffer(ctx->cso);
-   cso_save_fragment_shader(ctx->cso);
-   cso_save_vertex_shader(ctx->cso);
-   cso_save_geometry_shader(ctx->cso);
-   cso_save_vertex_elements(ctx->cso);
-   cso_save_aux_vertex_buffer_slot(ctx->cso);
+   cso_save_state(ctx->cso, (CSO_BIT_BLEND |
+                             CSO_BIT_DEPTH_STENCIL_ALPHA |
+                             CSO_BIT_RASTERIZER |
+                             CSO_BIT_SAMPLE_MASK |
+                             CSO_BIT_MIN_SAMPLES |
+                             CSO_BIT_FRAGMENT_SAMPLERS |
+                             CSO_BIT_FRAGMENT_SAMPLER_VIEWS |
+                             CSO_BIT_STREAM_OUTPUTS |
+                             CSO_BIT_VIEWPORT |
+                             CSO_BIT_FRAMEBUFFER |
+                             CSO_BIT_PAUSE_QUERIES |
+                             CSO_BIT_FRAGMENT_SHADER |
+                             CSO_BIT_VERTEX_SHADER |
+                             CSO_BIT_TESSCTRL_SHADER |
+                             CSO_BIT_TESSEVAL_SHADER |
+                             CSO_BIT_GEOMETRY_SHADER |
+                             CSO_BIT_VERTEX_ELEMENTS |
+                             CSO_BIT_AUX_VERTEX_BUFFER_SLOT));
 
    /* set misc state we care about */
    cso_set_blend(ctx->cso, &ctx->blend_write_color);
@@ -545,15 +584,17 @@ util_blit_pixels_tex(struct blit_state *ctx,
    cso_set_sample_mask(ctx->cso, ~0);
    cso_set_min_samples(ctx->cso, 1);
    cso_set_rasterizer(ctx->cso, &ctx->rasterizer);
-   cso_set_vertex_elements(ctx->cso, 2, ctx->velem);
+   cso_set_vertex_elements(ctx->cso, &ctx->velem);
    cso_set_stream_outputs(ctx->cso, 0, NULL, NULL);
 
    /* sampler */
    ctx->sampler.normalized_coords = normalized;
    ctx->sampler.min_img_filter = filter;
    ctx->sampler.mag_img_filter = filter;
-   cso_single_sampler(ctx->cso, PIPE_SHADER_FRAGMENT, 0, &ctx->sampler);
-   cso_single_sampler_done(ctx->cso, PIPE_SHADER_FRAGMENT);
+   {
+      const struct pipe_sampler_state *samplers[] = {&ctx->sampler};
+      cso_set_samplers(ctx->cso, PIPE_SHADER_FRAGMENT, 1, samplers);
+   }
 
    /* viewport */
    ctx->viewport.scale[0] = 0.5f * dst->width;
@@ -568,9 +609,12 @@ util_blit_pixels_tex(struct blit_state *ctx,
    cso_set_sampler_views(ctx->cso, PIPE_SHADER_FRAGMENT, 1, &src_sampler_view);
 
    /* shaders */
-   set_fragment_shader(ctx, TGSI_WRITEMASK_XYZW,
+   set_fragment_shader(ctx, src_sampler_view->format,
+                       src_xrbias,
                        src_sampler_view->texture->target);
    set_vertex_shader(ctx);
+   cso_set_tessctrl_shader_handle(ctx->cso, NULL);
+   cso_set_tesseval_shader_handle(ctx->cso, NULL);
    cso_set_geometry_shader_handle(ctx->cso, NULL);
 
    /* drawing dest */
@@ -592,27 +636,12 @@ util_blit_pixels_tex(struct blit_state *ctx,
                                   s0, t0, s1, t1,
                                   z);
 
-   util_draw_vertex_buffer(ctx->pipe, ctx->cso, ctx->vbuf,
-                           cso_get_aux_vertex_buffer_slot(ctx->cso),
+   util_draw_vertex_buffer(ctx->pipe, ctx->cso, ctx->vbuf, 0,
                            offset,
                            PIPE_PRIM_TRIANGLE_FAN,
                            4,  /* verts */
                            2); /* attribs/vert */
 
    /* restore state we changed */
-   cso_restore_blend(ctx->cso);
-   cso_restore_depth_stencil_alpha(ctx->cso);
-   cso_restore_rasterizer(ctx->cso);
-   cso_restore_sample_mask(ctx->cso);
-   cso_restore_min_samples(ctx->cso);
-   cso_restore_samplers(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_restore_sampler_views(ctx->cso, PIPE_SHADER_FRAGMENT);
-   cso_restore_viewport(ctx->cso);
-   cso_restore_framebuffer(ctx->cso);
-   cso_restore_fragment_shader(ctx->cso);
-   cso_restore_vertex_shader(ctx->cso);
-   cso_restore_geometry_shader(ctx->cso);
-   cso_restore_vertex_elements(ctx->cso);
-   cso_restore_aux_vertex_buffer_slot(ctx->cso);
-   cso_restore_stream_outputs(ctx->cso);
+   cso_restore_state(ctx->cso);
 }

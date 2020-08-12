@@ -32,9 +32,7 @@
 #define TEXTOBJ_H
 
 
-#include "compiler.h"
 #include "glheader.h"
-#include "mtypes.h"
 #include "samplerobj.h"
 
 
@@ -54,17 +52,17 @@ _mesa_lookup_texture(struct gl_context *ctx, GLuint id);
 extern struct gl_texture_object *
 _mesa_lookup_texture_err(struct gl_context *ctx, GLuint id, const char* func);
 
-extern void
-_mesa_begin_texture_lookups(struct gl_context *ctx);
-
-extern void
-_mesa_end_texture_lookups(struct gl_context *ctx);
-
 extern struct gl_texture_object *
 _mesa_lookup_texture_locked(struct gl_context *ctx, GLuint id);
 
 extern struct gl_texture_object *
 _mesa_get_current_tex_object(struct gl_context *ctx, GLenum target);
+
+extern struct gl_texture_object *
+_mesa_get_texobj_by_target_and_texunit(struct gl_context *ctx, GLenum target,
+                                       GLuint texunit,
+                                       bool allowProxyTargets,
+                                       const char* caller);
 
 extern struct gl_texture_object *
 _mesa_new_texture_object( struct gl_context *ctx, GLuint name, GLenum target );
@@ -87,7 +85,8 @@ _mesa_copy_texture_object( struct gl_texture_object *dest,
 
 extern void
 _mesa_clear_texture_object(struct gl_context *ctx,
-                           struct gl_texture_object *obj);
+                           struct gl_texture_object *obj,
+                           struct gl_texture_image *retainTexImage);
 
 extern void
 _mesa_reference_texobj_(struct gl_texture_object **ptr,
@@ -120,53 +119,55 @@ _mesa_unlock_texture(struct gl_context *ctx, struct gl_texture_object *texObj)
 }
 
 
-/**
- * Return number of faces for a texture target.  This will be 6 for
- * cube maps (and cube map arrays) and 1 otherwise.
- * NOTE: this function is not used for cube map arrays which operate
- * more like 2D arrays than cube maps.
- */
-static inline GLuint
-_mesa_num_tex_faces(GLenum target)
-{
-   switch (target) {
-   case GL_TEXTURE_CUBE_MAP:
-   case GL_PROXY_TEXTURE_CUBE_MAP:
-      return 6;
-   default:
-      return 1;
-   }
-}
-
-
 /** Is the texture "complete" with respect to the given sampler state? */
 static inline GLboolean
 _mesa_is_texture_complete(const struct gl_texture_object *texObj,
-                          const struct gl_sampler_object *sampler)
+                          const struct gl_sampler_object *sampler,
+                          bool linear_as_nearest_for_int_tex)
 {
-   if (texObj->_IsIntegerFormat &&
+   struct gl_texture_image *img = texObj->Image[0][texObj->BaseLevel];
+   bool isMultisample = img && img->NumSamples >= 2;
+
+   /*
+    * According to ARB_stencil_texturing, NEAREST_MIPMAP_NEAREST would
+    * be forbidden, however it is allowed per GL 4.5 rules, allow it
+    * even without GL 4.5 since it was a spec mistake.
+    */
+   /* Section 8.17 (texture completeness) of the OpenGL 4.6 core profile spec:
+    *
+    *  "The texture is not multisample; either the magnification filter is not
+    *  NEAREST, or the minification filter is neither NEAREST nor NEAREST_-
+    *  MIPMAP_NEAREST; and any of
+    *  – The internal format of the texture is integer.
+    *  – The internal format is STENCIL_INDEX.
+    *  – The internal format is DEPTH_STENCIL, and the value of DEPTH_-
+    *    STENCIL_TEXTURE_MODE for the texture is STENCIL_INDEX.""
+    */
+   if (!isMultisample &&
+       (texObj->_IsIntegerFormat ||
+        (texObj->StencilSampling &&
+         img->_BaseFormat == GL_DEPTH_STENCIL)) &&
        (sampler->MagFilter != GL_NEAREST ||
         (sampler->MinFilter != GL_NEAREST &&
          sampler->MinFilter != GL_NEAREST_MIPMAP_NEAREST))) {
-      /* If the format is integer, only nearest filtering is allowed */
-      return GL_FALSE;
+      /* If the format is integer, only nearest filtering is allowed,
+       * but some applications (eg: Grid Autosport) uses the default
+       * filtering values.
+       */
+      if (texObj->_IsIntegerFormat &&
+          linear_as_nearest_for_int_tex) {
+         /* Skip return */
+      } else {
+         return GL_FALSE;
+      }
    }
 
-   /* From the ARB_stencil_texturing specification:
-    * "Add a new bullet point for the conditions that cause the texture
-    *  to not be complete:
+   /* Section 8.17 (texture completeness) of the OpenGL 4.6 core profile spec:
     *
-    *  * The internal format of the texture is DEPTH_STENCIL, the
-    *    DEPTH_STENCIL_TEXTURE_MODE for the texture is STENCIL_INDEX and either
-    *    the magnification filter or the minification filter is not NEAREST."
+    *  "The minification filter requires a mipmap (is neither NEAREST nor LINEAR),
+    *  the texture is not multisample, and the texture is not mipmap complete.""
     */
-   if (texObj->StencilSampling &&
-       texObj->Image[0][texObj->BaseLevel]->_BaseFormat == GL_DEPTH_STENCIL &&
-       (sampler->MagFilter != GL_NEAREST || sampler->MinFilter != GL_NEAREST)) {
-      return GL_FALSE;
-   }
-
-   if (_mesa_is_mipmap_filter(sampler))
+   if (!isMultisample &&_mesa_is_mipmap_filter(sampler))
       return texObj->_MipmapComplete;
    else
       return texObj->_BaseComplete;
@@ -202,17 +203,18 @@ _mesa_unlock_context_textures( struct gl_context *ctx );
 extern void
 _mesa_lock_context_textures( struct gl_context *ctx );
 
-extern struct gl_texture_object *
-_mesa_create_nameless_texture(struct gl_context *ctx, GLenum target);
-
 extern void
 _mesa_delete_nameless_texture(struct gl_context *ctx,
                               struct gl_texture_object *texObj);
 
 extern void
-_mesa_bind_texture_unit(struct gl_context *ctx,
-                        GLuint unit,
-                        struct gl_texture_object *texObj);
+_mesa_bind_texture(struct gl_context *ctx, GLenum target,
+                   struct gl_texture_object *tex_obj);
+
+extern struct gl_texture_object *
+_mesa_lookup_or_create_texture(struct gl_context *ctx, GLenum target,
+                               GLuint texName, bool no_error, bool is_ext_dsa,
+                               const char *name);
 
 /*@}*/
 
@@ -221,21 +223,43 @@ _mesa_bind_texture_unit(struct gl_context *ctx,
  */
 /*@{*/
 
+void GLAPIENTRY
+_mesa_GenTextures_no_error(GLsizei n, GLuint *textures);
+
 extern void GLAPIENTRY
 _mesa_GenTextures(GLsizei n, GLuint *textures);
 
+void GLAPIENTRY
+_mesa_CreateTextures_no_error(GLenum target, GLsizei n, GLuint *textures);
+
 extern void GLAPIENTRY
 _mesa_CreateTextures(GLenum target, GLsizei n, GLuint *textures);
+
+void GLAPIENTRY
+_mesa_DeleteTextures_no_error(GLsizei n, const GLuint *textures);
 
 extern void GLAPIENTRY
 _mesa_DeleteTextures( GLsizei n, const GLuint *textures );
 
 
+void GLAPIENTRY
+_mesa_BindTexture_no_error(GLenum target, GLuint texture);
+
 extern void GLAPIENTRY
 _mesa_BindTexture( GLenum target, GLuint texture );
 
+void GLAPIENTRY
+_mesa_BindMultiTextureEXT(GLenum texunit, GLenum target, GLuint texture);
+
+void GLAPIENTRY
+_mesa_BindTextureUnit_no_error(GLuint unit, GLuint texture);
+
 extern void GLAPIENTRY
 _mesa_BindTextureUnit(GLuint unit, GLuint texture);
+
+void GLAPIENTRY
+_mesa_BindTextures_no_error(GLuint first, GLsizei count,
+                            const GLuint *textures);
 
 extern void GLAPIENTRY
 _mesa_BindTextures( GLuint first, GLsizei count, const GLuint *textures );
@@ -253,10 +277,18 @@ _mesa_AreTexturesResident( GLsizei n, const GLuint *textures,
 extern GLboolean GLAPIENTRY
 _mesa_IsTexture( GLuint texture );
 
+void GLAPIENTRY
+_mesa_InvalidateTexSubImage_no_error(GLuint texture, GLint level, GLint xoffset,
+                                     GLint yoffset, GLint zoffset,
+                                     GLsizei width, GLsizei height,
+                                     GLsizei depth);
+
 extern void GLAPIENTRY
 _mesa_InvalidateTexSubImage(GLuint texture, GLint level, GLint xoffset,
                             GLint yoffset, GLint zoffset, GLsizei width,
                             GLsizei height, GLsizei depth);
+void GLAPIENTRY
+_mesa_InvalidateTexImage_no_error(GLuint texture, GLint level);
 
 extern void GLAPIENTRY
 _mesa_InvalidateTexImage(GLuint texture, GLint level);

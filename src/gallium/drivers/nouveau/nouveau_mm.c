@@ -3,7 +3,7 @@
 
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 
 #include "nouveau_winsys.h"
 #include "nouveau_screen.h"
@@ -70,7 +70,7 @@ mm_slab_alloc(struct mm_slab *slab)
    return -1;
 }
 
-static INLINE void
+static inline void
 mm_slab_free(struct mm_slab *slab, int i)
 {
    assert(i < slab->count);
@@ -79,7 +79,7 @@ mm_slab_free(struct mm_slab *slab, int i)
    assert(slab->free <= slab->count);
 }
 
-static INLINE int
+static inline int
 mm_get_order(uint32_t size)
 {
    int s = __builtin_clz(size) ^ 31;
@@ -104,7 +104,7 @@ mm_bucket_by_size(struct nouveau_mman *cache, unsigned size)
 }
 
 /* size of bo allocation for slab with chunks of (1 << chunk_order) bytes */
-static INLINE uint32_t
+static inline uint32_t
 mm_default_slab_size(unsigned chunk_order)
 {
    static const int8_t slab_order[MM_MAX_ORDER - MM_MIN_ORDER + 1] =
@@ -142,13 +142,13 @@ mm_slab_new(struct nouveau_mman *cache, int chunk_order)
       return PIPE_ERROR_OUT_OF_MEMORY;
    }
 
-   LIST_INITHEAD(&slab->head);
+   list_inithead(&slab->head);
 
    slab->cache = cache;
    slab->order = chunk_order;
    slab->count = slab->free = size >> chunk_order;
 
-   LIST_ADD(&slab->head, &mm_bucket_by_order(cache, chunk_order)->free);
+   list_add(&slab->head, &mm_bucket_by_order(cache, chunk_order)->free);
 
    cache->allocated += size;
 
@@ -181,16 +181,16 @@ nouveau_mm_allocate(struct nouveau_mman *cache,
       return NULL;
    }
 
-   if (!LIST_IS_EMPTY(&bucket->used)) {
+   if (!list_is_empty(&bucket->used)) {
       slab = LIST_ENTRY(struct mm_slab, bucket->used.next, head);
    } else {
-      if (LIST_IS_EMPTY(&bucket->free)) {
+      if (list_is_empty(&bucket->free)) {
          mm_slab_new(cache, MAX2(mm_get_order(size), MM_MIN_ORDER));
       }
       slab = LIST_ENTRY(struct mm_slab, bucket->free.next, head);
 
-      LIST_DEL(&slab->head);
-      LIST_ADD(&slab->head, &bucket->used);
+      list_del(&slab->head);
+      list_add(&slab->head, &bucket->used);
    }
 
    *offset = mm_slab_alloc(slab) << slab->order;
@@ -202,8 +202,8 @@ nouveau_mm_allocate(struct nouveau_mman *cache,
    nouveau_bo_ref(slab->bo, bo);
 
    if (slab->free == 0) {
-      LIST_DEL(&slab->head);
-      LIST_ADD(&slab->head, &bucket->full);
+      list_del(&slab->head);
+      list_add(&slab->head, &bucket->full);
    }
 
    alloc->next = NULL;
@@ -222,12 +222,12 @@ nouveau_mm_free(struct nouveau_mm_allocation *alloc)
    mm_slab_free(slab, alloc->offset >> slab->order);
 
    if (slab->free == slab->count) {
-      LIST_DEL(&slab->head);
-      LIST_ADDTAIL(&slab->head, &bucket->free);
+      list_del(&slab->head);
+      list_addtail(&slab->head, &bucket->free);
    } else
    if (slab->free == 1) {
-      LIST_DEL(&slab->head);
-      LIST_ADDTAIL(&slab->head, &bucket->used);
+      list_del(&slab->head);
+      list_addtail(&slab->head, &bucket->used);
    }
 
    FREE(alloc);
@@ -255,21 +255,21 @@ nouveau_mm_create(struct nouveau_device *dev, uint32_t domain,
    cache->allocated = 0;
 
    for (i = 0; i < MM_NUM_BUCKETS; ++i) {
-      LIST_INITHEAD(&cache->bucket[i].free);
-      LIST_INITHEAD(&cache->bucket[i].used);
-      LIST_INITHEAD(&cache->bucket[i].full);
+      list_inithead(&cache->bucket[i].free);
+      list_inithead(&cache->bucket[i].used);
+      list_inithead(&cache->bucket[i].full);
    }
 
    return cache;
 }
 
-static INLINE void
+static inline void
 nouveau_mm_free_slabs(struct list_head *head)
 {
    struct mm_slab *slab, *next;
 
    LIST_FOR_EACH_ENTRY_SAFE(slab, next, head, head) {
-      LIST_DEL(&slab->head);
+      list_del(&slab->head);
       nouveau_bo_ref(NULL, &slab->bo);
       FREE(slab);
    }
@@ -284,8 +284,8 @@ nouveau_mm_destroy(struct nouveau_mman *cache)
       return;
 
    for (i = 0; i < MM_NUM_BUCKETS; ++i) {
-      if (!LIST_IS_EMPTY(&cache->bucket[i].used) ||
-          !LIST_IS_EMPTY(&cache->bucket[i].full))
+      if (!list_is_empty(&cache->bucket[i].used) ||
+          !list_is_empty(&cache->bucket[i].full))
          debug_printf("WARNING: destroying GPU memory cache "
                       "with some buffers still in use\n");
 

@@ -33,8 +33,53 @@
 #include "lp_surface.h"
 #include "lp_texture.h"
 #include "lp_query.h"
+#include "lp_rast.h"
 
+static void
+lp_resource_copy_ms(struct pipe_context *pipe,
+                    struct pipe_resource *dst, unsigned dst_level,
+                    unsigned dstx, unsigned dsty, unsigned dstz,
+                    struct pipe_resource *src, unsigned src_level,
+                    const struct pipe_box *src_box)
+{
+   struct pipe_box dst_box = *src_box;
+   enum pipe_format src_format;
+   dst_box.x = dstx;
+   dst_box.y = dsty;
+   dst_box.z = dstz;
 
+   src_format = src->format;
+
+   for (unsigned i = 0; i < src->nr_samples; i++) {
+      struct pipe_transfer *src_trans, *dst_trans;
+      const uint8_t *src_map = llvmpipe_transfer_map_ms(pipe,
+                                                        src, 0, PIPE_TRANSFER_READ, i,
+                                                        src_box,
+                                                        &src_trans);
+      if (!src_map)
+         return;
+
+      uint8_t *dst_map = llvmpipe_transfer_map_ms(pipe,
+                                                  dst, 0, PIPE_TRANSFER_WRITE, i,
+                                                  &dst_box,
+                                                  &dst_trans);
+      if (!dst_map) {
+         pipe->transfer_unmap(pipe, src_trans);
+         return;
+      }
+
+      util_copy_box(dst_map,
+                    src_format,
+                    dst_trans->stride, dst_trans->layer_stride,
+                    0, 0, 0,
+                    src_box->width, src_box->height, src_box->depth,
+                    src_map,
+                    src_trans->stride, src_trans->layer_stride,
+                    0, 0, 0);
+      pipe->transfer_unmap(pipe, dst_trans);
+      pipe->transfer_unmap(pipe, src_trans);
+   }
+}
 static void
 lp_resource_copy(struct pipe_context *pipe,
                  struct pipe_resource *dst, unsigned dst_level,
@@ -42,13 +87,6 @@ lp_resource_copy(struct pipe_context *pipe,
                  struct pipe_resource *src, unsigned src_level,
                  const struct pipe_box *src_box)
 {
-   struct llvmpipe_resource *src_tex = llvmpipe_resource(src);
-   struct llvmpipe_resource *dst_tex = llvmpipe_resource(dst);
-   const enum pipe_format format = src_tex->base.format;
-   unsigned width = src_box->width;
-   unsigned height = src_box->height;
-   unsigned depth = src_box->depth;
-
    llvmpipe_flush_resource(pipe,
                            dst, dst_level,
                            FALSE, /* read_only */
@@ -63,58 +101,14 @@ lp_resource_copy(struct pipe_context *pipe,
                            FALSE, /* do_not_block */
                            "blit src");
 
-   /* Fallback for buffers. */
-   if (dst->target == PIPE_BUFFER && src->target == PIPE_BUFFER) {
-      util_resource_copy_region(pipe, dst, dst_level, dstx, dsty, dstz,
-                                src, src_level, src_box);
+   if (dst->nr_samples > 1 &&
+       dst->nr_samples == src->nr_samples) {
+      lp_resource_copy_ms(pipe, dst, dst_level, dstx, dsty, dstz,
+                          src, src_level, src_box);
       return;
    }
-
-   /*
-   printf("surface copy from %u lvl %u to %u lvl %u: %u,%u,%u to %u,%u,%u %u x %u x %u\n",
-          src_tex->id, src_level, dst_tex->id, dst_level,
-          src_box->x, src_box->y, src_box->z, dstx, dsty, dstz,
-          src_box->width, src_box->height, src_box->depth);
-   */
-
-   /* make sure display target resources (which cannot have levels/layers) are mapped */
-   if (src_tex->dt)
-      (void) llvmpipe_resource_map(src, src_level, 0, LP_TEX_USAGE_READ);
-   if (dst_tex->dt)
-      /*
-       * Could set this to WRITE_ALL if complete dst is covered but it gets
-       * ignored anyway.
-       */
-      (void) llvmpipe_resource_map(dst, dst_level, 0, LP_TEX_USAGE_READ_WRITE);
-
-
-   /* copy */
-   {
-      const ubyte *src_linear_ptr
-         = llvmpipe_get_texture_image_address(src_tex, src_box->z,
-                                              src_level);
-      ubyte *dst_linear_ptr
-         = llvmpipe_get_texture_image_address(dst_tex, dstz,
-                                              dst_level);
-
-      if (dst_linear_ptr && src_linear_ptr) {
-         util_copy_box(dst_linear_ptr, format,
-                       llvmpipe_resource_stride(&dst_tex->base, dst_level),
-                       dst_tex->img_stride[dst_level],
-                       dstx, dsty, 0,
-                       width, height, depth,
-                       src_linear_ptr,
-                       llvmpipe_resource_stride(&src_tex->base, src_level),
-                       src_tex->img_stride[src_level],
-                       src_box->x, src_box->y, 0);
-      }
-   }
-
-   if (src_tex->dt)
-      llvmpipe_resource_unmap(src, 0, 0);
-   if (dst_tex->dt)
-      llvmpipe_resource_unmap(dst, 0, 0);
-
+   util_resource_copy_region(pipe, dst, dst_level, dstx, dsty, dstz,
+                             src, src_level, src_box);
 }
 
 
@@ -127,21 +121,8 @@ static void lp_blit(struct pipe_context *pipe,
    if (blit_info->render_condition_enable && !llvmpipe_check_render_cond(lp))
       return;
 
-   if (info.src.resource->nr_samples > 1 &&
-       info.dst.resource->nr_samples <= 1 &&
-       !util_format_is_depth_or_stencil(info.src.resource->format) &&
-       !util_format_is_pure_integer(info.src.resource->format)) {
-      debug_printf("llvmpipe: color resolve unimplemented\n");
-      return;
-   }
-
    if (util_try_blit_via_copy_region(pipe, &info)) {
       return; /* done */
-   }
-
-   if (info.mask & PIPE_MASK_S) {
-      debug_printf("llvmpipe: cannot blit stencil, skipping\n");
-      info.mask &= ~PIPE_MASK_S;
    }
 
    if (!util_blitter_is_blit_supported(lp->blitter, &info)) {
@@ -164,9 +145,11 @@ static void lp_blit(struct pipe_context *pipe,
    util_blitter_save_scissor(lp->blitter, &lp->scissors[0]);
    util_blitter_save_fragment_shader(lp->blitter, lp->fs);
    util_blitter_save_blend(lp->blitter, (void*)lp->blend);
+   util_blitter_save_tessctrl_shader(lp->blitter, (void*)lp->tcs);
+   util_blitter_save_tesseval_shader(lp->blitter, (void*)lp->tes);
    util_blitter_save_depth_stencil_alpha(lp->blitter, (void*)lp->depth_stencil);
    util_blitter_save_stencil_ref(lp->blitter, &lp->stencil_ref);
-   /*util_blitter_save_sample_mask(sp->blitter, lp->sample_mask);*/
+   util_blitter_save_sample_mask(lp->blitter, lp->sample_mask);
    util_blitter_save_framebuffer(lp->blitter, &lp->framebuffer);
    util_blitter_save_fragment_sampler_states(lp->blitter,
                      lp->num_samplers[PIPE_SHADER_FRAGMENT],
@@ -193,8 +176,15 @@ llvmpipe_create_surface(struct pipe_context *pipe,
 {
    struct pipe_surface *ps;
 
-   if (!(pt->bind & (PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_RENDER_TARGET)))
+   if (!(pt->bind & (PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_RENDER_TARGET))) {
       debug_printf("Illegal surface creation without bind flag\n");
+      if (util_format_is_depth_or_stencil(surf_tmpl->format)) {
+         pt->bind |= PIPE_BIND_DEPTH_STENCIL;
+      }
+      else {
+         pt->bind |= PIPE_BIND_RENDER_TARGET;
+      }
+   }
 
    ps = CALLOC_STRUCT(pipe_surface);
    if (ps) {
@@ -240,22 +230,125 @@ llvmpipe_surface_destroy(struct pipe_context *pipe,
 }
 
 
+
+static void
+llvmpipe_get_sample_position(struct pipe_context *pipe,
+                             unsigned sample_count,
+                             unsigned sample_index,
+                             float *out_value)
+{
+   switch (sample_count) {
+   case 4:
+      out_value[0] = lp_sample_pos_4x[sample_index][0];
+      out_value[1] = lp_sample_pos_4x[sample_index][1];
+      break;
+   default:
+      break;
+   }
+}
+
+static void
+lp_clear_color_texture_helper(struct pipe_transfer *dst_trans,
+                                ubyte *dst_map,
+                                enum pipe_format format,
+                                const union pipe_color_union *color,
+                                unsigned width, unsigned height, unsigned depth)
+{
+   union util_color uc;
+
+   assert(dst_trans->stride > 0);
+
+   util_pack_color_union(format, &uc, color);
+
+   util_fill_box(dst_map, format,
+                 dst_trans->stride, dst_trans->layer_stride,
+                 0, 0, 0, width, height, depth, &uc);
+}
+
+static void
+lp_clear_color_texture_msaa(struct pipe_context *pipe,
+                            struct pipe_resource *texture,
+                            enum pipe_format format,
+                            const union pipe_color_union *color,
+                            unsigned sample,
+                            const struct pipe_box *box)
+{
+   struct pipe_transfer *dst_trans;
+   ubyte *dst_map;
+
+   dst_map = llvmpipe_transfer_map_ms(pipe, texture, 0, PIPE_TRANSFER_WRITE,
+                                      sample, box, &dst_trans);
+   if (!dst_map)
+      return;
+
+   if (dst_trans->stride > 0) {
+      lp_clear_color_texture_helper(dst_trans, dst_map, format, color,
+                                    box->width, box->height, box->depth);
+   }
+   pipe->transfer_unmap(pipe, dst_trans);
+}
+
 static void
 llvmpipe_clear_render_target(struct pipe_context *pipe,
                              struct pipe_surface *dst,
                              const union pipe_color_union *color,
                              unsigned dstx, unsigned dsty,
-                             unsigned width, unsigned height)
+                             unsigned width, unsigned height,
+                             bool render_condition_enabled)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
-   if (!llvmpipe_check_render_cond(llvmpipe))
+   if (render_condition_enabled && !llvmpipe_check_render_cond(llvmpipe))
       return;
 
-   util_clear_render_target(pipe, dst, color,
-                            dstx, dsty, width, height);
+   if (dst->texture->nr_samples > 1) {
+      struct pipe_box box;
+      u_box_2d(dstx, dsty, width, height, &box);
+      for (unsigned s = 0; s < util_res_sample_count(dst->texture); s++) {
+         lp_clear_color_texture_msaa(pipe, dst->texture, dst->format,
+                                     color, s, &box);
+      }
+   } else
+      util_clear_render_target(pipe, dst, color,
+                               dstx, dsty, width, height);
 }
 
+
+static void
+lp_clear_depth_stencil_texture_msaa(struct pipe_context *pipe,
+                                    struct pipe_resource *texture,
+                                    enum pipe_format format,
+                                    unsigned clear_flags,
+                                    uint64_t zstencil, unsigned sample,
+                                    const struct pipe_box *box)
+{
+   struct pipe_transfer *dst_trans;
+   ubyte *dst_map;
+   boolean need_rmw = FALSE;
+
+   if ((clear_flags & PIPE_CLEAR_DEPTHSTENCIL) &&
+       ((clear_flags & PIPE_CLEAR_DEPTHSTENCIL) != PIPE_CLEAR_DEPTHSTENCIL) &&
+       util_format_is_depth_and_stencil(format))
+      need_rmw = TRUE;
+
+   dst_map = llvmpipe_transfer_map_ms(pipe,
+                                      texture,
+                                      0,
+                                      (need_rmw ? PIPE_TRANSFER_READ_WRITE :
+                                       PIPE_TRANSFER_WRITE),
+                                      sample, box, &dst_trans);
+   assert(dst_map);
+   if (!dst_map)
+      return;
+
+   assert(dst_trans->stride > 0);
+
+   util_fill_zs_box(dst_map, format, need_rmw, clear_flags,
+		    dst_trans->stride, dst_trans->layer_stride,
+		    box->width, box->height, box->depth, zstencil);
+
+   pipe->transfer_unmap(pipe, dst_trans);
+}
 
 static void
 llvmpipe_clear_depth_stencil(struct pipe_context *pipe,
@@ -264,18 +357,73 @@ llvmpipe_clear_depth_stencil(struct pipe_context *pipe,
                              double depth,
                              unsigned stencil,
                              unsigned dstx, unsigned dsty,
-                             unsigned width, unsigned height)
+                             unsigned width, unsigned height,
+                             bool render_condition_enabled)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
-   if (!llvmpipe_check_render_cond(llvmpipe))
+   if (render_condition_enabled && !llvmpipe_check_render_cond(llvmpipe))
       return;
 
-   util_clear_depth_stencil(pipe, dst, clear_flags,
-                            depth, stencil,
-                            dstx, dsty, width, height);
+   if (dst->texture->nr_samples > 1) {
+      uint64_t zstencil = util_pack64_z_stencil(dst->format, depth, stencil);
+      struct pipe_box box;
+      u_box_2d(dstx, dsty, width, height, &box);
+      for (unsigned s = 0; s < util_res_sample_count(dst->texture); s++)
+         lp_clear_depth_stencil_texture_msaa(pipe, dst->texture,
+                                             dst->format, clear_flags,
+                                             zstencil, s, &box);
+   } else
+      util_clear_depth_stencil(pipe, dst, clear_flags,
+                               depth, stencil,
+                               dstx, dsty, width, height);
 }
 
+static void
+llvmpipe_clear_texture(struct pipe_context *pipe,
+                       struct pipe_resource *tex,
+                       unsigned level,
+                       const struct pipe_box *box,
+                       const void *data)
+{
+   const struct util_format_description *desc =
+          util_format_description(tex->format);
+   if (tex->nr_samples <= 1) {
+      util_clear_texture(pipe, tex, level, box, data);
+      return;
+   }
+   union pipe_color_union color;
+
+   if (util_format_is_depth_or_stencil(tex->format)) {
+      unsigned clear = 0;
+      float depth = 0.0f;
+      uint8_t stencil = 0;
+      uint64_t zstencil;
+
+      if (util_format_has_depth(desc)) {
+         clear |= PIPE_CLEAR_DEPTH;
+         util_format_unpack_z_float(tex->format, &depth, data, 1);
+      }
+
+      if (util_format_has_stencil(desc)) {
+         clear |= PIPE_CLEAR_STENCIL;
+         util_format_unpack_s_8uint(tex->format, &stencil, data, 1);
+      }
+
+      zstencil = util_pack64_z_stencil(tex->format, depth, stencil);
+
+      for (unsigned s = 0; s < util_res_sample_count(tex); s++)
+         lp_clear_depth_stencil_texture_msaa(pipe, tex, tex->format, clear, zstencil,
+                                             s, box);
+   } else {
+      util_format_unpack_rgba(tex->format, color.ui, data, 1);
+
+      for (unsigned s = 0; s < util_res_sample_count(tex); s++) {
+         lp_clear_color_texture_msaa(pipe, tex, tex->format, &color, s,
+                                     box);
+      }
+   }
+}
 
 void
 llvmpipe_init_surface_functions(struct llvmpipe_context *lp)
@@ -284,8 +432,10 @@ llvmpipe_init_surface_functions(struct llvmpipe_context *lp)
    lp->pipe.clear_depth_stencil = llvmpipe_clear_depth_stencil;
    lp->pipe.create_surface = llvmpipe_create_surface;
    lp->pipe.surface_destroy = llvmpipe_surface_destroy;
-   /* These two are not actually functions dealing with surfaces */
+   /* These are not actually functions dealing with surfaces */
+   lp->pipe.clear_texture = llvmpipe_clear_texture;
    lp->pipe.resource_copy_region = lp_resource_copy;
    lp->pipe.blit = lp_blit;
    lp->pipe.flush_resource = lp_flush_resource;
+   lp->pipe.get_sample_position = llvmpipe_get_sample_position;
 }

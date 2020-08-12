@@ -87,6 +87,7 @@ extern struct draw_stage *draw_offset_stage( struct draw_context *context );
 extern struct draw_stage *draw_clip_stage( struct draw_context *context );
 extern struct draw_stage *draw_flatshade_stage( struct draw_context *context );
 extern struct draw_stage *draw_cull_stage( struct draw_context *context );
+extern struct draw_stage *draw_user_cull_stage( struct draw_context *draw );
 extern struct draw_stage *draw_stipple_stage( struct draw_context *context );
 extern struct draw_stage *draw_wide_line_stage( struct draw_context *context );
 extern struct draw_stage *draw_wide_point_stage( struct draw_context *context );
@@ -115,7 +116,7 @@ void draw_unfilled_prepare_outputs(struct draw_context *context,
  * \param idx  index into stage's tmp[] array to put the copy (dest)
  * \return  pointer to the copied vertex
  */
-static INLINE struct vertex_header *
+static inline struct vertex_header *
 dup_vert( struct draw_stage *stage,
 	  const struct vertex_header *vert,
 	  unsigned idx )

@@ -1,11 +1,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
+#include "util/os_file.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_hash_table.h"
+#include "util/u_pointer.h"
 #include "os/os_thread.h"
 
 #include "nouveau_drm_public.h"
@@ -13,66 +16,50 @@
 #include "nouveau/nouveau_winsys.h"
 #include "nouveau/nouveau_screen.h"
 
-static struct util_hash_table *fd_tab = NULL;
+#include <nvif/class.h>
+#include <nvif/cl0080.h>
 
-pipe_static_mutex(nouveau_screen_mutex);
+static struct hash_table *fd_tab = NULL;
 
-boolean nouveau_drm_screen_unref(struct nouveau_screen *screen)
+static mtx_t nouveau_screen_mutex = _MTX_INITIALIZER_NP;
+
+bool nouveau_drm_screen_unref(struct nouveau_screen *screen)
 {
 	int ret;
 	if (screen->refcount == -1)
 		return true;
 
-	pipe_mutex_lock(nouveau_screen_mutex);
+	mtx_lock(&nouveau_screen_mutex);
 	ret = --screen->refcount;
 	assert(ret >= 0);
 	if (ret == 0)
-		util_hash_table_remove(fd_tab, intptr_to_pointer(screen->device->fd));
-	pipe_mutex_unlock(nouveau_screen_mutex);
+		_mesa_hash_table_remove_key(fd_tab, intptr_to_pointer(screen->drm->fd));
+	mtx_unlock(&nouveau_screen_mutex);
 	return ret == 0;
-}
-
-static unsigned hash_fd(void *key)
-{
-    int fd = pointer_to_intptr(key);
-    struct stat stat;
-    fstat(fd, &stat);
-
-    return stat.st_dev ^ stat.st_ino ^ stat.st_rdev;
-}
-
-static int compare_fd(void *key1, void *key2)
-{
-    int fd1 = pointer_to_intptr(key1);
-    int fd2 = pointer_to_intptr(key2);
-    struct stat stat1, stat2;
-    fstat(fd1, &stat1);
-    fstat(fd2, &stat2);
-
-    return stat1.st_dev != stat2.st_dev ||
-           stat1.st_ino != stat2.st_ino ||
-           stat1.st_rdev != stat2.st_rdev;
 }
 
 PUBLIC struct pipe_screen *
 nouveau_drm_screen_create(int fd)
 {
+	struct nouveau_drm *drm = NULL;
 	struct nouveau_device *dev = NULL;
-	struct pipe_screen *(*init)(struct nouveau_device *);
-	struct nouveau_screen *screen;
-	int ret, dupfd = -1;
+	struct nouveau_screen *(*init)(struct nouveau_device *);
+	struct nouveau_screen *screen = NULL;
+	int ret, dupfd;
 
-	pipe_mutex_lock(nouveau_screen_mutex);
+	mtx_lock(&nouveau_screen_mutex);
 	if (!fd_tab) {
-		fd_tab = util_hash_table_create(hash_fd, compare_fd);
-		if (!fd_tab)
-			goto err;
+		fd_tab = util_hash_table_create_fd_keys();
+		if (!fd_tab) {
+			mtx_unlock(&nouveau_screen_mutex);
+			return NULL;
+		}
 	}
 
 	screen = util_hash_table_get(fd_tab, intptr_to_pointer(fd));
 	if (screen) {
 		screen->refcount++;
-		pipe_mutex_unlock(nouveau_screen_mutex);
+		mtx_unlock(&nouveau_screen_mutex);
 		return &screen->base;
 	}
 
@@ -85,8 +72,16 @@ nouveau_drm_screen_create(int fd)
 	 * nouveau_device_wrap does not close the fd in case of a device
 	 * creation error.
 	 */
-	dupfd = dup(fd);
-	ret = nouveau_device_wrap(dupfd, 1, &dev);
+	dupfd = os_dupfd_cloexec(fd);
+
+	ret = nouveau_drm_new(dupfd, &drm);
+	if (ret)
+		goto err;
+
+	ret = nouveau_device_new(&drm->client, NV_DEVICE,
+				 &(struct nv_device_v0) {
+					.device = ~0ULL,
+				 }, sizeof(struct nv_device_v0), &dev);
 	if (ret)
 		goto err;
 
@@ -108,6 +103,10 @@ nouveau_drm_screen_create(int fd)
 	case 0xf0:
 	case 0x100:
 	case 0x110:
+	case 0x120:
+	case 0x130:
+	case 0x140:
+	case 0x160:
 		init = nvc0_screen_create;
 		break;
 	default:
@@ -116,20 +115,27 @@ nouveau_drm_screen_create(int fd)
 		goto err;
 	}
 
-	screen = (struct nouveau_screen*)init(dev);
-	if (!screen)
+	screen = init(dev);
+	if (!screen || !screen->base.context_create)
 		goto err;
 
-	util_hash_table_set(fd_tab, intptr_to_pointer(fd), screen);
+	/* Use dupfd in hash table, to avoid errors if the original fd gets
+	 * closed by its owner. The hash key needs to live at least as long as
+	 * the screen.
+	 */
+	_mesa_hash_table_insert(fd_tab, intptr_to_pointer(dupfd), screen);
 	screen->refcount = 1;
-	pipe_mutex_unlock(nouveau_screen_mutex);
+	mtx_unlock(&nouveau_screen_mutex);
 	return &screen->base;
 
 err:
-	if (dev)
+	if (screen) {
+		screen->base.destroy(&screen->base);
+	} else {
 		nouveau_device_del(&dev);
-	else if (dupfd >= 0)
+		nouveau_drm_del(&drm);
 		close(dupfd);
-	pipe_mutex_unlock(nouveau_screen_mutex);
+	}
+	mtx_unlock(&nouveau_screen_mutex);
 	return NULL;
 }

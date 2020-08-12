@@ -27,7 +27,7 @@
 
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/imports.h"
+
 #include "main/mtypes.h"
 
 #include "t_context.h"
@@ -75,7 +75,7 @@ static GLuint check_input_changes( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLuint i;
-   
+
    for (i = 0; i <= _TNL_LAST_MAT; i++) {
       if (tnl->vb.AttribPtr[i]->size != tnl->pipeline.last_attrib_size[i] ||
 	  tnl->vb.AttribPtr[i]->stride != tnl->pipeline.last_attrib_stride[i]) {
@@ -93,7 +93,7 @@ static GLuint check_output_changes( struct gl_context *ctx )
 {
 #if 0
    TNLcontext *tnl = TNL_CONTEXT(ctx);
-   
+
    for (i = 0; i < VARYING_SLOT_MAX; i++) {
       if (tnl->vb.ResultPtr[i]->size != tnl->last_result_size[i] ||
 	  tnl->vb.ResultPtr[i]->stride != tnl->last_result_stride[i]) {
@@ -103,14 +103,92 @@ static GLuint check_output_changes( struct gl_context *ctx )
       }
    }
 
-   if (tnl->pipeline.output_changes) 
+   if (tnl->pipeline.output_changes)
       tnl->Driver.NotifyOutputChanges( ctx, tnl->pipeline.output_changes );
-   
+
    return tnl->pipeline.output_changes;
 #else
    return ~0;
 #endif
 }
+
+/**
+ * START/END_FAST_MATH macros:
+ *
+ * START_FAST_MATH: Set x86 FPU to faster, 32-bit precision mode (and save
+ *                  original mode to a temporary).
+ * END_FAST_MATH: Restore x86 FPU to original mode.
+ */
+#if defined(__GNUC__) && defined(__i386__)
+/*
+ * Set the x86 FPU control word to guarentee only 32 bits of precision
+ * are stored in registers.  Allowing the FPU to store more introduces
+ * differences between situations where numbers are pulled out of memory
+ * vs. situations where the compiler is able to optimize register usage.
+ *
+ * In the worst case, we force the compiler to use a memory access to
+ * truncate the float, by specifying the 'volatile' keyword.
+ */
+/* Hardware default: All exceptions masked, extended double precision,
+ * round to nearest (IEEE compliant):
+ */
+#define DEFAULT_X86_FPU		0x037f
+/* All exceptions masked, single precision, round to nearest:
+ */
+#define FAST_X86_FPU		0x003f
+/* The fldcw instruction will cause any pending FP exceptions to be
+ * raised prior to entering the block, and we clear any pending
+ * exceptions before exiting the block.  Hence, asm code has free
+ * reign over the FPU while in the fast math block.
+ */
+#if defined(NO_FAST_MATH)
+#define START_FAST_MATH(x)						\
+do {									\
+   static GLuint mask = DEFAULT_X86_FPU;				\
+   __asm__ ( "fnstcw %0" : "=m" (*&(x)) );				\
+   __asm__ ( "fldcw %0" : : "m" (mask) );				\
+} while (0)
+#else
+#define START_FAST_MATH(x)						\
+do {									\
+   static GLuint mask = FAST_X86_FPU;					\
+   __asm__ ( "fnstcw %0" : "=m" (*&(x)) );				\
+   __asm__ ( "fldcw %0" : : "m" (mask) );				\
+} while (0)
+#endif
+/* Restore original FPU mode, and clear any exceptions that may have
+ * occurred in the FAST_MATH block.
+ */
+#define END_FAST_MATH(x)						\
+do {									\
+   __asm__ ( "fnclex ; fldcw %0" : : "m" (*&(x)) );			\
+} while (0)
+
+#elif defined(_MSC_VER) && defined(_M_IX86)
+#define DEFAULT_X86_FPU		0x037f /* See GCC comments above */
+#define FAST_X86_FPU		0x003f /* See GCC comments above */
+#if defined(NO_FAST_MATH)
+#define START_FAST_MATH(x) do {\
+	static GLuint mask = DEFAULT_X86_FPU;\
+	__asm fnstcw word ptr [x]\
+	__asm fldcw word ptr [mask]\
+} while(0)
+#else
+#define START_FAST_MATH(x) do {\
+	static GLuint mask = FAST_X86_FPU;\
+	__asm fnstcw word ptr [x]\
+	__asm fldcw word ptr [mask]\
+} while(0)
+#endif
+#define END_FAST_MATH(x) do {\
+	__asm fnclex\
+	__asm fldcw word ptr [x]\
+} while(0)
+
+#else
+#define START_FAST_MATH(x)  x = 0
+#define END_FAST_MATH(x)  (void)(x)
+#endif
 
 
 void _tnl_run_pipeline( struct gl_context *ctx )
@@ -134,10 +212,10 @@ void _tnl_run_pipeline( struct gl_context *ctx )
 	 if (s->validate)
 	    s->validate( ctx, s );
       }
-      
+
       tnl->pipeline.new_state = 0;
       tnl->pipeline.input_changes = 0;
-      
+
       /* Pipeline can only change its output in response to either a
        * statechange or an input size/stride change.  No other changes
        * are allowed.
@@ -209,10 +287,10 @@ const struct tnl_pipeline_stage *_tnl_default_pipeline[] = {
    &_tnl_texgen_stage,
    &_tnl_texture_transform_stage,
    &_tnl_point_attenuation_stage,
-   &_tnl_vertex_program_stage, 
+   &_tnl_vertex_program_stage,
    &_tnl_fog_coordinate_stage,
    &_tnl_render_stage,
-   NULL 
+   NULL
 };
 
 const struct tnl_pipeline_stage *_tnl_vp_pipeline[] = {

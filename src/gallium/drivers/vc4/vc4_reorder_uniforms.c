@@ -42,22 +42,30 @@ qir_reorder_uniforms(struct vc4_compile *c)
         uint32_t *uniform_index = NULL;
         uint32_t uniform_index_size = 0;
         uint32_t next_uniform = 0;
-        struct simple_node *node;
-        foreach(node, &c->instructions) {
-                struct qinst *inst = (struct qinst *)node;
 
-                for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+        qir_for_each_inst_inorder(inst, c) {
+                uint32_t new = ~0;
+
+                for (int i = 0; i < qir_get_nsrc(inst); i++) {
                         if (inst->src[i].file != QFILE_UNIF)
                                 continue;
 
-                        uint32_t new = next_uniform++;
-                        if (uniform_index_size <= new) {
-                                uniform_index_size =
-                                        MAX2(uniform_index_size * 2, 16);
-                                uniform_index =
-                                        realloc(uniform_index,
-                                                uniform_index_size *
-                                                sizeof(uint32_t));
+                        if (new == ~0) {
+                                new = next_uniform++;
+                                if (uniform_index_size <= new) {
+                                        uniform_index_size =
+                                                MAX2(uniform_index_size * 2, 16);
+                                        uniform_index =
+                                                realloc(uniform_index,
+                                                        uniform_index_size *
+                                                        sizeof(uint32_t));
+                                }
+                        } else {
+                                /* If we've got two uniform references in this
+                                 * instruction, they need to be the same
+                                 * uniform value.
+                                 */
+                                assert(inst->src[i].index == uniform_index[new]);
                         }
 
                         uniform_index[new] = inst->src[i].index;

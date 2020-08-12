@@ -24,6 +24,8 @@
  *    Eric Anholt <eric@anholt.net>
  */
 
+#undef NDEBUG
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,7 +53,10 @@ main(int argc, char **argv)
 {
    struct hash_table *ht;
 
-   ht = _mesa_hash_table_create(NULL, _mesa_key_hash_string,
+   (void) argc;
+   (void) argv;
+
+   ht = _mesa_hash_table_create(NULL, _mesa_hash_string,
                                 _mesa_key_string_equal);
 
    _mesa_hash_table_insert(ht, str1, NULL);

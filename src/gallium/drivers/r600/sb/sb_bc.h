@@ -27,10 +27,8 @@
 #ifndef SB_BC_H_
 #define SB_BC_H_
 
-extern "C" {
 #include <stdint.h>
 #include "r600_isa.h"
-}
 
 #include <cstdio>
 #include <string>
@@ -50,6 +48,7 @@ class fetch_node;
 class alu_group_node;
 class region_node;
 class shader;
+class value;
 
 class sb_ostream {
 public:
@@ -175,6 +174,8 @@ enum shader_target
 	TARGET_GS_COPY,
 	TARGET_COMPUTE,
 	TARGET_FETCH,
+	TARGET_HS,
+	TARGET_LS,
 
 	TARGET_NUM
 };
@@ -400,6 +401,7 @@ enum sched_queue_id {
 	SQ_ALU,
 	SQ_TEX,
 	SQ_VTX,
+	SQ_GDS,
 
 	SQ_NUM
 };
@@ -479,7 +481,9 @@ struct bc_cf {
 
 	bool is_alu_extended() {
 		assert(op_ptr->flags & CF_ALU);
-		return kc[2].mode != KC_LOCK_NONE || kc[3].mode != KC_LOCK_NONE;
+		return kc[2].mode != KC_LOCK_NONE || kc[3].mode != KC_LOCK_NONE ||
+			kc[0].index_mode != KC_INDEX_NONE || kc[1].index_mode != KC_INDEX_NONE ||
+			kc[2].index_mode != KC_INDEX_NONE || kc[3].index_mode != KC_INDEX_NONE;
 	}
 
 };
@@ -491,6 +495,15 @@ struct bc_alu_src {
 	unsigned abs:1;
 	unsigned rel:1;
 	literal value;
+
+	void clear() {
+		sel = 0;
+		chan = 0;
+		neg = 0;
+		abs = 0;
+		rel = 0;
+		value = 0;
+	}
 };
 
 struct bc_alu {
@@ -517,11 +530,38 @@ struct bc_alu {
 
 	unsigned slot:3;
 
+	unsigned lds_idx_offset:6;
+
 	alu_op_flags slot_flags;
 
 	void set_op(unsigned op) {
 		this->op = op;
 		op_ptr = r600_isa_alu(op);
+	}
+	void clear() {
+		op_ptr = nullptr;
+		op = 0;
+		for (int i = 0; i < 3; ++i)
+			src[i].clear();
+		dst_gpr = 0;
+		dst_chan = 0;
+		dst_rel = 0;
+		clamp = 0;
+		omod = 0;
+		bank_swizzle = 0;
+		index_mode = 0;
+		last = 0;
+		pred_sel = 0;
+		fog_merge = 0;
+		write_mask = 0;
+		update_exec_mask = 0;
+		update_pred = 0;
+		slot = 0;
+		lds_idx_offset = 0;
+		slot_flags = AF_NONE;
+	}
+	bc_alu() {
+		clear();
 	}
 };
 
@@ -535,10 +575,12 @@ struct bc_fetch {
 
 	unsigned src_gpr:7;
 	unsigned src_rel:1;
+	unsigned src_rel_global:1; /* for GDS ops */
 	unsigned src_sel[4];
 
 	unsigned dst_gpr:7;
 	unsigned dst_rel:1;
+	unsigned dst_rel_global:1; /* for GDS ops */
 	unsigned dst_sel[4];
 
 	unsigned alt_const:1;
@@ -571,6 +613,20 @@ struct bc_fetch {
 	unsigned const_buf_no_stride:1;
 	unsigned endian_swap:2;
 	unsigned mega_fetch:1;
+
+	unsigned src2_gpr:7; /* for GDS */
+	unsigned alloc_consume:1;
+	unsigned uav_id:4;
+	unsigned uav_index_mode:2;
+	unsigned bcast_first_req:1;
+
+	/* for MEM ops */
+	unsigned elem_size:2;
+	unsigned uncached:1;
+	unsigned indexed:1;
+	unsigned burst_count:4;
+	unsigned array_base:13;
+	unsigned array_size:12;
 
 	void set_op(unsigned op) { this->op = op; op_ptr = r600_isa_fetch(op); }
 };
@@ -651,6 +707,7 @@ public:
 			return false;
 
 		switch (hw_chip) {
+		case HW_CHIP_HEMLOCK:
 		case HW_CHIP_CYPRESS:
 		case HW_CHIP_JUNIPER:
 			return false;
@@ -697,6 +754,9 @@ public:
 			mask = 0x0F;
 		if (!is_cayman() && (slot_flags & AF_S))
 			mask |= 0x10;
+		/* Force LDS_IDX ops into SLOT_X */
+		if (op_ptr->opcode[0] == -1 && ((op_ptr->opcode[1] & 0xFF) == 0x11))
+			mask = 0x01;
 		return mask;
 	}
 
@@ -706,6 +766,10 @@ public:
 
 	bool is_kcache_sel(unsigned sel) {
 		return ((sel >= 128 && sel < 192) || (sel >= 256 && sel < 320));
+	}
+
+	bool is_lds_oq(unsigned sel) {
+		return (sel >= 0xdb && sel <= 0xde);
 	}
 
 	const char * get_hw_class_name();
@@ -738,6 +802,8 @@ private:
 	int decode_cf_mem(unsigned &i, bc_cf &bc);
 
 	int decode_fetch_vtx(unsigned &i, bc_fetch &bc);
+	int decode_fetch_gds(unsigned &i, bc_fetch &bc);
+	int decode_fetch_mem(unsigned &i, bc_fetch &bc);
 };
 
 // bytecode format definition
@@ -778,13 +844,12 @@ public: \
 	} \
 	unsigned get_##name() const { \
 		return (value>>(first_bit))&((1ull<<((last_bit)-(first_bit)+1))-1); \
-	} \
+	}
 
 #define BC_RSRVD(fmt, last_bit, first_bit)
 
 // CLAMP macro defined elsewhere interferes with bytecode field name
 #undef CLAMP
-
 #include "sb_bc_fmt_def.inc"
 
 #undef BC_FORMAT_BEGIN
@@ -820,13 +885,16 @@ class bc_parser {
 
 	bool gpr_reladdr;
 
+	// Note: currently relies on input emitting SET_CF in same basic block as uses
+	value *cf_index_value[2];
+	alu_node *mova;
 public:
 
 	bc_parser(sb_context &sctx, r600_bytecode *bc, r600_shader* pshader) :
 		ctx(sctx), dec(), bc(bc), pshader(pshader),
 		dw(), bc_ndw(), max_cf(),
 		sh(), error(), slots(), cgroup(),
-		cf_map(), loop_stack(), gpr_reladdr() { }
+		cf_map(), loop_stack(), gpr_reladdr(), cf_index_value(), mova() { }
 
 	int decode();
 	int prepare();
@@ -854,6 +922,10 @@ private:
 	int prepare_loop(cf_node *c);
 	int prepare_if(cf_node *c);
 
+	void save_set_cf_index(value *val, unsigned idx);
+	value *get_cf_index_value(unsigned idx);
+	void save_mova(alu_node *mova);
+	alu_node *get_mova();
 };
 
 
@@ -951,6 +1023,8 @@ private:
 	int build_fetch_clause(cf_node *n);
 	int build_fetch_tex(fetch_node *n);
 	int build_fetch_vtx(fetch_node *n);
+	int build_fetch_gds(fetch_node *n);
+	int build_fetch_mem(fetch_node* n);
 };
 
 } // namespace r600_sb

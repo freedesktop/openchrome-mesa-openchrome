@@ -23,7 +23,6 @@
 #include "codegen/nv50_ir.h"
 #include "codegen/nv50_ir_target.h"
 
-#define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 
 namespace nv50_ir {
@@ -86,14 +85,18 @@ const char *operationStr[OP_LAST + 1] =
    "mad",
    "fma",
    "sad",
+   "shladd",
+   "xmad",
    "abs",
    "neg",
    "not",
    "and",
    "or",
    "xor",
+   "lop3 lut",
    "shl",
    "shr",
+   "shf",
    "max",
    "min",
    "sat",
@@ -135,11 +138,13 @@ const char *operationStr[OP_LAST + 1] =
    "membar",
    "vfetch",
    "pfetch",
+   "afetch",
    "export",
    "linterp",
    "pinterp",
    "emit",
    "restart",
+   "final",
    "tex",
    "texbias",
    "texlod",
@@ -160,6 +165,7 @@ const char *operationStr[OP_LAST + 1] =
    "subfm",
    "suclamp",
    "sueau",
+   "suq",
    "madsp",
    "texbar",
    "dfdx",
@@ -174,7 +180,10 @@ const char *operationStr[OP_LAST + 1] =
    "insbf",
    "extbf",
    "bfind",
+   "brev",
+   "bmsk",
    "permt",
+   "sgxt",
    "atom",
    "bar",
    "vadd",
@@ -188,12 +197,60 @@ const char *operationStr[OP_LAST + 1] =
    "vsel",
    "cctl",
    "shfl",
+   "vote",
+   "bufq",
+   "warpsync",
    "(invalid)"
 };
 
 static const char *atomSubOpStr[] =
 {
    "add", "min", "max", "inc", "dec", "and", "or", "xor", "cas", "exch"
+};
+
+static const char *ldstSubOpStr[] =
+{
+   "", "lock", "unlock"
+};
+
+static const char *subfmOpStr[] =
+{
+   "", "3d"
+};
+
+static const char *shflOpStr[] =
+{
+  "idx", "up", "down", "bfly"
+};
+
+static const char *pixldOpStr[] =
+{
+   "count", "covmask", "covered", "offset", "cent_offset", "sampleid"
+};
+
+static const char *rcprsqOpStr[] =
+{
+   "", "64h"
+};
+
+static const char *emitOpStr[] =
+{
+   "", "restart"
+};
+
+static const char *cctlOpStr[] =
+{
+   "", "", "", "", "", "iv", "ivall"
+};
+
+static const char *barOpStr[] =
+{
+   "sync", "arrive", "red and", "red or", "red popc"
+};
+
+static const char *xmadOpCModeStr[] =
+{
+   "clo", "chi", "csfu", "cbcc"
 };
 
 static const char *DataTypeStr[] =
@@ -240,7 +297,7 @@ static const char *CondCodeStr[] =
    "o"
 };
 
-static const char *SemanticStr[SV_LAST + 1] =
+static const char *SemanticStr[] =
 {
    "POSITION",
    "VERTEX_ID",
@@ -250,6 +307,7 @@ static const char *SemanticStr[SV_LAST + 1] =
    "VERTEX_COUNT",
    "LAYER",
    "VIEWPORT_INDEX",
+   "VIEWPORT_MASK",
    "Y_DIR",
    "FACE",
    "POINT_SIZE",
@@ -258,9 +316,11 @@ static const char *SemanticStr[SV_LAST + 1] =
    "SAMPLE_INDEX",
    "SAMPLE_POS",
    "SAMPLE_MASK",
-   "TESS_FACTOR",
+   "TESS_OUTER",
+   "TESS_INNER",
    "TESS_COORD",
    "TID",
+   "COMBINED_TID",
    "CTAID",
    "NTID",
    "GRIDID",
@@ -273,6 +333,16 @@ static const char *SemanticStr[SV_LAST + 1] =
    "SBASE",
    "VERTEX_STRIDE",
    "INVOCATION_INFO",
+   "THREAD_KILL",
+   "BASEVERTEX",
+   "BASEINSTANCE",
+   "DRAWID",
+   "WORK_DIM",
+   "LANEMASK_EQ",
+   "LANEMASK_LT",
+   "LANEMASK_LE",
+   "LANEMASK_GT",
+   "LANEMASK_GE",
    "?",
    "(INVALID)"
 };
@@ -295,6 +365,31 @@ static const char *interpStr[16] =
    "samp mul",
    "samp flat",
    "samp sc"
+};
+
+static const char *texMaskStr[16] =
+{
+   "____",
+   "r___",
+   "_g__",
+   "rg__",
+   "__b_",
+   "r_b_",
+   "_gb_",
+   "rgb_",
+   "___a",
+   "r__a",
+   "_g_a",
+   "rg_a",
+   "__ba",
+   "r_ba",
+   "_gba",
+   "rgba",
+};
+
+static const char *gatherCompStr[4] =
+{
+   "r", "g", "b", "a",
 };
 
 #define PRINT(args...)                                \
@@ -409,7 +504,7 @@ int ImmediateValue::print(char *buf, size_t size, DataType ty) const
    case TYPE_U64:
    case TYPE_S64:
    default:
-      PRINT("0x%016"PRIx64, reg.data.u64);
+      PRINT("0x%016" PRIx64, reg.data.u64);
       break;
    }
    return pos;
@@ -423,6 +518,8 @@ int Symbol::print(char *buf, size_t size, DataType ty) const
 int Symbol::print(char *buf, size_t size,
                   Value *rel, Value *dimRel, DataType ty) const
 {
+   STATIC_ASSERT(ARRAY_SIZE(SemanticStr) == SV_LAST + 1);
+
    size_t pos = 0;
    char c;
 
@@ -445,6 +542,7 @@ int Symbol::print(char *buf, size_t size,
    case FILE_MEMORY_CONST:  c = 'c'; break;
    case FILE_SHADER_INPUT:  c = 'a'; break;
    case FILE_SHADER_OUTPUT: c = 'o'; break;
+   case FILE_MEMORY_BUFFER: c = 'b'; break; // Only used before lowering
    case FILE_MEMORY_GLOBAL: c = 'g'; break;
    case FILE_MEMORY_SHARED: c = 's'; break;
    case FILE_MEMORY_LOCAL:  c = 'l'; break;
@@ -524,15 +622,66 @@ void Instruction::print() const
       if (asFlow()->target.bb)
          PRINT(" %sBB:%i", colour[TXT_BRA], asFlow()->target.bb->getId());
    } else {
-      PRINT("%s ", operationStr[op]);
+      if (asTex())
+         PRINT("%s%s ", operationStr[op], asTex()->tex.scalar ? "s" : "");
+      else
+         PRINT("%s ", operationStr[op]);
       if (op == OP_LINTERP || op == OP_PINTERP)
          PRINT("%s ", interpStr[ipa]);
       switch (op) {
       case OP_SUREDP:
+      case OP_SUREDB:
       case OP_ATOM:
-         if (subOp < Elements(atomSubOpStr))
+         if (subOp < ARRAY_SIZE(atomSubOpStr))
             PRINT("%s ", atomSubOpStr[subOp]);
          break;
+      case OP_LOAD:
+      case OP_STORE:
+         if (subOp < ARRAY_SIZE(ldstSubOpStr))
+            PRINT("%s ", ldstSubOpStr[subOp]);
+         break;
+      case OP_SUBFM:
+         if (subOp < ARRAY_SIZE(subfmOpStr))
+            PRINT("%s ", subfmOpStr[subOp]);
+         break;
+      case OP_SHFL:
+         if (subOp < ARRAY_SIZE(shflOpStr))
+            PRINT("%s ", shflOpStr[subOp]);
+         break;
+      case OP_PIXLD:
+         if (subOp < ARRAY_SIZE(pixldOpStr))
+            PRINT("%s ", pixldOpStr[subOp]);
+         break;
+      case OP_RCP:
+      case OP_RSQ:
+         if (subOp < ARRAY_SIZE(rcprsqOpStr))
+            PRINT("%s ", rcprsqOpStr[subOp]);
+         break;
+      case OP_EMIT:
+         if (subOp < ARRAY_SIZE(emitOpStr))
+            PRINT("%s ", emitOpStr[subOp]);
+         break;
+      case OP_CCTL:
+         if (subOp < ARRAY_SIZE(cctlOpStr))
+            PRINT("%s ", cctlOpStr[subOp]);
+         break;
+      case OP_BAR:
+         if (subOp < ARRAY_SIZE(barOpStr))
+            PRINT("%s ", barOpStr[subOp]);
+         break;
+      case OP_XMAD: {
+         if (subOp & NV50_IR_SUBOP_XMAD_PSL)
+            PRINT("psl ");
+         if (subOp & NV50_IR_SUBOP_XMAD_MRG)
+            PRINT("mrg ");
+         unsigned cmode = (subOp & NV50_IR_SUBOP_XMAD_CMODE_MASK);
+         cmode >>= NV50_IR_SUBOP_XMAD_CMODE_SHIFT;
+         if (cmode && cmode <= ARRAY_SIZE(xmadOpCModeStr))
+            PRINT("%s ", xmadOpCModeStr[cmode - 1]);
+         for (int i = 0; i < 2; i++)
+            PRINT("h%d ", (subOp & NV50_IR_SUBOP_XMAD_H1(i)) ? 1 : 0);
+         break;
+      }
       default:
          if (subOp)
             PRINT("(SUBOP:%u) ", subOp);
@@ -540,10 +689,14 @@ void Instruction::print() const
       }
       if (perPatch)
          PRINT("patch ");
-      if (asTex())
-         PRINT("%s %s$r%u $s%u %s", asTex()->tex.target.getName(),
-               colour[TXT_MEM], asTex()->tex.r, asTex()->tex.s,
-               colour[TXT_INSN]);
+      if (asTex()) {
+         PRINT("%s %s$r%u $s%u ", asTex()->tex.target.getName(),
+               colour[TXT_MEM], asTex()->tex.r, asTex()->tex.s);
+         if (op == OP_TXG)
+            PRINT("%s ", gatherCompStr[asTex()->tex.gatherComp]);
+         PRINT("%s %s", texMaskStr[asTex()->tex.mask], colour[TXT_INSN]);
+      }
+
       if (postFactor)
          PRINT("x2^%i ", postFactor);
       PRINT("%s%s", dnz ? "dnz " : (ftz ? "ftz " : ""),  DataTypeStr[dType]);
@@ -598,7 +751,7 @@ void Instruction::print() const
 class PrintPass : public Pass
 {
 public:
-   PrintPass() : serial(0) { }
+   PrintPass(bool omitLineNum) : serial(0), omit_serial(omitLineNum) { }
 
    virtual bool visit(Function *);
    virtual bool visit(BasicBlock *);
@@ -606,6 +759,7 @@ public:
 
 private:
    int serial;
+   bool omit_serial;
 };
 
 bool
@@ -669,7 +823,11 @@ PrintPass::visit(BasicBlock *bb)
 bool
 PrintPass::visit(Instruction *insn)
 {
-   INFO("%3i: ", serial++);
+   if (omit_serial)
+      INFO("     ");
+   else
+      INFO("%3i: ", serial);
+   serial++;
    insn->print();
    return true;
 }
@@ -677,14 +835,14 @@ PrintPass::visit(Instruction *insn)
 void
 Function::print()
 {
-   PrintPass pass;
+   PrintPass pass(prog->driver->omitLineNum);
    pass.run(this, true, false);
 }
 
 void
 Program::print()
 {
-   PrintPass pass;
+   PrintPass pass(driver->omitLineNum);
    init_colours();
    pass.run(this, true, false);
 }

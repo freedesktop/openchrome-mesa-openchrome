@@ -27,7 +27,7 @@
 
 #include "util/u_memory.h"
 #include "util/u_math.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "draw/draw_context.h"
 #include "draw/draw_private.h"
 #include "draw/draw_pt.h"
@@ -71,12 +71,10 @@ draw_pt_fetch_prepare(struct pt_fetch *fetch,
 
    fetch->vertex_size = vertex_size;
 
-   /* Leave the clipmask/edgeflags/pad/vertex_id untouched
+   /* Leave the clipmask/edgeflags/pad/vertex_id,
+    * clip[] and whatever else in the header untouched.
     */
-   dst_offset += 1 * sizeof(float);
-   /* Just leave the clip[] and pre_clip_pos[] array untouched.
-    */
-   dst_offset += 8 * sizeof(float);
+   dst_offset = offsetof(struct vertex_header, data);
 
    if (instance_id_index != ~0) {
       num_extra_inputs++;

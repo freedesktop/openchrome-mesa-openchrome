@@ -24,26 +24,17 @@
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
  */
-/*
- * Authors:
- *      Marek Olšák <maraeo@gmail.com>
- *
- * Based on work from libdrm_radeon by:
- *      Aapo Tahkola <aet@rasterburn.org>
- *      Nicolai Haehnle <prefect_@gmx.net>
- *      Jérôme Glisse <glisse@freedesktop.org>
- */
 
 /*
     This file replaces libdrm's radeon_cs_gem with our own implemention.
     It's optimized specifically for Radeon DRM.
-    Reloc writes and space checking are faster and simpler than their
+    Adding buffers and space checking are faster and simpler than their
     counterparts in libdrm (the time complexity of all the functions
     is O(1) in nearly all scenarios, thanks to hashing).
 
     It works like this:
 
-    cs_add_reloc(cs, buf, read_domain, write_domain) adds a new relocation and
+    cs_add_buffer(cs, buf, read_domain, write_domain) adds a new relocation and
     also adds the size of 'buf' to the used_gart and used_vram winsys variables
     based on the domains, which are simply or'd for the accounting purposes.
     The adding is skipped if the reloc is already present in the list, but it
@@ -58,14 +49,14 @@
     (done in the pipe driver)
 
     cs_write_reloc(cs, buf) just writes a reloc that has been added using
-    cs_add_reloc. The read_domain and write_domain parameters have been removed,
-    because we already specify them in cs_add_reloc.
+    cs_add_buffer. The read_domain and write_domain parameters have been removed,
+    because we already specify them in cs_add_buffer.
 */
 
 #include "radeon_drm_cs.h"
 
 #include "util/u_memory.h"
-#include "os/os_time.h"
+#include "util/os_time.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -75,595 +66,790 @@
 
 #define RELOC_DWORDS (sizeof(struct drm_radeon_cs_reloc) / sizeof(uint32_t))
 
-static struct pipe_fence_handle *
-radeon_cs_create_fence(struct radeon_winsys_cs *rcs);
+static struct pipe_fence_handle *radeon_cs_create_fence(struct radeon_cmdbuf *rcs);
 static void radeon_fence_reference(struct pipe_fence_handle **dst,
                                    struct pipe_fence_handle *src);
 
-static boolean radeon_init_cs_context(struct radeon_cs_context *csc,
-                                      struct radeon_drm_winsys *ws)
+static struct radeon_winsys_ctx *radeon_drm_ctx_create(struct radeon_winsys *ws)
 {
-    int i;
+   struct radeon_ctx *ctx = CALLOC_STRUCT(radeon_ctx);
+   if (!ctx)
+      return NULL;
 
-    csc->fd = ws->fd;
-    csc->nrelocs = 512;
-    csc->relocs_bo = (struct radeon_bo**)
-                     CALLOC(1, csc->nrelocs * sizeof(struct radeon_bo*));
-    if (!csc->relocs_bo) {
-        return FALSE;
-    }
+   ctx->ws = (struct radeon_drm_winsys*)ws;
+   ctx->gpu_reset_counter = radeon_drm_get_gpu_reset_counter(ctx->ws);
+   return (struct radeon_winsys_ctx*)ctx;
+}
 
-    csc->relocs = (struct drm_radeon_cs_reloc*)
-                  CALLOC(1, csc->nrelocs * sizeof(struct drm_radeon_cs_reloc));
-    if (!csc->relocs) {
-        FREE(csc->relocs_bo);
-        return FALSE;
-    }
+static void radeon_drm_ctx_destroy(struct radeon_winsys_ctx *ctx)
+{
+   FREE(ctx);
+}
 
-    csc->chunks[0].chunk_id = RADEON_CHUNK_ID_IB;
-    csc->chunks[0].length_dw = 0;
-    csc->chunks[0].chunk_data = (uint64_t)(uintptr_t)csc->buf;
-    csc->chunks[1].chunk_id = RADEON_CHUNK_ID_RELOCS;
-    csc->chunks[1].length_dw = 0;
-    csc->chunks[1].chunk_data = (uint64_t)(uintptr_t)csc->relocs;
-    csc->chunks[2].chunk_id = RADEON_CHUNK_ID_FLAGS;
-    csc->chunks[2].length_dw = 2;
-    csc->chunks[2].chunk_data = (uint64_t)(uintptr_t)&csc->flags;
+static enum pipe_reset_status
+radeon_drm_ctx_query_reset_status(struct radeon_winsys_ctx *rctx)
+{
+   struct radeon_ctx *ctx = (struct radeon_ctx*)rctx;
 
-    csc->chunk_array[0] = (uint64_t)(uintptr_t)&csc->chunks[0];
-    csc->chunk_array[1] = (uint64_t)(uintptr_t)&csc->chunks[1];
-    csc->chunk_array[2] = (uint64_t)(uintptr_t)&csc->chunks[2];
+   unsigned latest = radeon_drm_get_gpu_reset_counter(ctx->ws);
 
-    csc->cs.chunks = (uint64_t)(uintptr_t)csc->chunk_array;
+   if (ctx->gpu_reset_counter == latest)
+      return PIPE_NO_RESET;
 
-    for (i = 0; i < Elements(csc->reloc_indices_hashlist); i++) {
-        csc->reloc_indices_hashlist[i] = -1;
-    }
-    return TRUE;
+   ctx->gpu_reset_counter = latest;
+   return PIPE_UNKNOWN_CONTEXT_RESET;
+}
+
+static bool radeon_init_cs_context(struct radeon_cs_context *csc,
+                                   struct radeon_drm_winsys *ws)
+{
+   int i;
+
+   csc->fd = ws->fd;
+
+   csc->chunks[0].chunk_id = RADEON_CHUNK_ID_IB;
+   csc->chunks[0].length_dw = 0;
+   csc->chunks[0].chunk_data = (uint64_t)(uintptr_t)csc->buf;
+   csc->chunks[1].chunk_id = RADEON_CHUNK_ID_RELOCS;
+   csc->chunks[1].length_dw = 0;
+   csc->chunks[1].chunk_data = (uint64_t)(uintptr_t)csc->relocs;
+   csc->chunks[2].chunk_id = RADEON_CHUNK_ID_FLAGS;
+   csc->chunks[2].length_dw = 2;
+   csc->chunks[2].chunk_data = (uint64_t)(uintptr_t)&csc->flags;
+
+   csc->chunk_array[0] = (uint64_t)(uintptr_t)&csc->chunks[0];
+   csc->chunk_array[1] = (uint64_t)(uintptr_t)&csc->chunks[1];
+   csc->chunk_array[2] = (uint64_t)(uintptr_t)&csc->chunks[2];
+
+   csc->cs.chunks = (uint64_t)(uintptr_t)csc->chunk_array;
+
+   for (i = 0; i < ARRAY_SIZE(csc->reloc_indices_hashlist); i++) {
+      csc->reloc_indices_hashlist[i] = -1;
+   }
+   return true;
 }
 
 static void radeon_cs_context_cleanup(struct radeon_cs_context *csc)
 {
-    unsigned i;
+   unsigned i;
 
-    for (i = 0; i < csc->crelocs; i++) {
-        p_atomic_dec(&csc->relocs_bo[i]->num_cs_references);
-        radeon_bo_reference(&csc->relocs_bo[i], NULL);
-    }
+   for (i = 0; i < csc->num_relocs; i++) {
+      p_atomic_dec(&csc->relocs_bo[i].bo->num_cs_references);
+      radeon_bo_reference(&csc->relocs_bo[i].bo, NULL);
+   }
+   for (i = 0; i < csc->num_slab_buffers; ++i) {
+      p_atomic_dec(&csc->slab_buffers[i].bo->num_cs_references);
+      radeon_bo_reference(&csc->slab_buffers[i].bo, NULL);
+   }
 
-    csc->crelocs = 0;
-    csc->validated_crelocs = 0;
-    csc->chunks[0].length_dw = 0;
-    csc->chunks[1].length_dw = 0;
-    csc->used_gart = 0;
-    csc->used_vram = 0;
+   csc->num_relocs = 0;
+   csc->num_validated_relocs = 0;
+   csc->num_slab_buffers = 0;
+   csc->chunks[0].length_dw = 0;
+   csc->chunks[1].length_dw = 0;
 
-    for (i = 0; i < Elements(csc->reloc_indices_hashlist); i++) {
-        csc->reloc_indices_hashlist[i] = -1;
-    }
+   for (i = 0; i < ARRAY_SIZE(csc->reloc_indices_hashlist); i++) {
+      csc->reloc_indices_hashlist[i] = -1;
+   }
 }
 
 static void radeon_destroy_cs_context(struct radeon_cs_context *csc)
 {
-    radeon_cs_context_cleanup(csc);
-    FREE(csc->relocs_bo);
-    FREE(csc->relocs);
+   radeon_cs_context_cleanup(csc);
+   FREE(csc->slab_buffers);
+   FREE(csc->relocs_bo);
+   FREE(csc->relocs);
 }
 
 
-static struct radeon_winsys_cs *
-radeon_drm_cs_create(struct radeon_winsys *rws,
+static struct radeon_cmdbuf *
+radeon_drm_cs_create(struct radeon_winsys_ctx *ctx,
                      enum ring_type ring_type,
                      void (*flush)(void *ctx, unsigned flags,
                                    struct pipe_fence_handle **fence),
                      void *flush_ctx,
-                     struct radeon_winsys_cs_handle *trace_buf)
+                     bool stop_exec_on_failure)
 {
-    struct radeon_drm_winsys *ws = radeon_drm_winsys(rws);
-    struct radeon_drm_cs *cs;
+   struct radeon_drm_winsys *ws = ((struct radeon_ctx*)ctx)->ws;
+   struct radeon_drm_cs *cs;
 
-    cs = CALLOC_STRUCT(radeon_drm_cs);
-    if (!cs) {
-        return NULL;
-    }
-    pipe_semaphore_init(&cs->flush_completed, 1);
+   cs = CALLOC_STRUCT(radeon_drm_cs);
+   if (!cs) {
+      return NULL;
+   }
+   util_queue_fence_init(&cs->flush_completed);
 
-    cs->ws = ws;
-    cs->flush_cs = flush;
-    cs->flush_data = flush_ctx;
-    cs->trace_buf = (struct radeon_bo*)trace_buf;
+   cs->ws = ws;
+   cs->flush_cs = flush;
+   cs->flush_data = flush_ctx;
 
-    if (!radeon_init_cs_context(&cs->csc1, cs->ws)) {
-        FREE(cs);
-        return NULL;
-    }
-    if (!radeon_init_cs_context(&cs->csc2, cs->ws)) {
-        radeon_destroy_cs_context(&cs->csc1);
-        FREE(cs);
-        return NULL;
-    }
+   if (!radeon_init_cs_context(&cs->csc1, cs->ws)) {
+      FREE(cs);
+      return NULL;
+   }
+   if (!radeon_init_cs_context(&cs->csc2, cs->ws)) {
+      radeon_destroy_cs_context(&cs->csc1);
+      FREE(cs);
+      return NULL;
+   }
 
-    /* Set the first command buffer as current. */
-    cs->csc = &cs->csc1;
-    cs->cst = &cs->csc2;
-    cs->base.buf = cs->csc->buf;
-    cs->base.ring_type = ring_type;
+   /* Set the first command buffer as current. */
+   cs->csc = &cs->csc1;
+   cs->cst = &cs->csc2;
+   cs->base.current.buf = cs->csc->buf;
+   cs->base.current.max_dw = ARRAY_SIZE(cs->csc->buf);
+   cs->ring_type = ring_type;
 
-    p_atomic_inc(&ws->num_cs);
-    return &cs->base;
+   p_atomic_inc(&ws->num_cs);
+   return &cs->base;
 }
 
-#define OUT_CS(cs, value) (cs)->buf[(cs)->cdw++] = (value)
-
-static INLINE void update_reloc(struct drm_radeon_cs_reloc *reloc,
-                                enum radeon_bo_domain rd,
-                                enum radeon_bo_domain wd,
-                                unsigned priority,
-                                enum radeon_bo_domain *added_domains)
+int radeon_lookup_buffer(struct radeon_cs_context *csc, struct radeon_bo *bo)
 {
-    *added_domains = (rd | wd) & ~(reloc->read_domains | reloc->write_domain);
+   unsigned hash = bo->hash & (ARRAY_SIZE(csc->reloc_indices_hashlist)-1);
+   struct radeon_bo_item *buffers;
+   unsigned num_buffers;
+   int i = csc->reloc_indices_hashlist[hash];
 
-    reloc->read_domains |= rd;
-    reloc->write_domain |= wd;
-    reloc->flags = MAX2(reloc->flags, priority);
+   if (bo->handle) {
+      buffers = csc->relocs_bo;
+      num_buffers = csc->num_relocs;
+   } else {
+      buffers = csc->slab_buffers;
+      num_buffers = csc->num_slab_buffers;
+   }
+
+   /* not found or found */
+   if (i == -1 || (i < num_buffers && buffers[i].bo == bo))
+      return i;
+
+   /* Hash collision, look for the BO in the list of relocs linearly. */
+   for (i = num_buffers - 1; i >= 0; i--) {
+      if (buffers[i].bo == bo) {
+         /* Put this reloc in the hash list.
+          * This will prevent additional hash collisions if there are
+          * several consecutive lookup_buffer calls for the same buffer.
+          *
+          * Example: Assuming buffers A,B,C collide in the hash list,
+          * the following sequence of relocs:
+          *         AAAAAAAAAAABBBBBBBBBBBBBBCCCCCCCC
+          * will collide here: ^ and here:   ^,
+          * meaning that we should get very few collisions in the end. */
+         csc->reloc_indices_hashlist[hash] = i;
+         return i;
+      }
+   }
+   return -1;
 }
 
-int radeon_get_reloc(struct radeon_cs_context *csc, struct radeon_bo *bo)
+static unsigned radeon_lookup_or_add_real_buffer(struct radeon_drm_cs *cs,
+                                                 struct radeon_bo *bo)
 {
-    unsigned hash = bo->handle & (Elements(csc->reloc_indices_hashlist)-1);
-    int i = csc->reloc_indices_hashlist[hash];
+   struct radeon_cs_context *csc = cs->csc;
+   struct drm_radeon_cs_reloc *reloc;
+   unsigned hash = bo->hash & (ARRAY_SIZE(csc->reloc_indices_hashlist)-1);
+   int i = -1;
 
-    /* not found or found */
-    if (i == -1 || csc->relocs_bo[i] == bo)
-        return i;
+   i = radeon_lookup_buffer(csc, bo);
 
-    /* Hash collision, look for the BO in the list of relocs linearly. */
-    for (i = csc->crelocs - 1; i >= 0; i--) {
-        if (csc->relocs_bo[i] == bo) {
-            /* Put this reloc in the hash list.
-             * This will prevent additional hash collisions if there are
-             * several consecutive get_reloc calls for the same buffer.
-             *
-             * Example: Assuming buffers A,B,C collide in the hash list,
-             * the following sequence of relocs:
-             *         AAAAAAAAAAABBBBBBBBBBBBBBCCCCCCCC
-             * will collide here: ^ and here:   ^,
-             * meaning that we should get very few collisions in the end. */
-            csc->reloc_indices_hashlist[hash] = i;
-            return i;
-        }
-    }
-    return -1;
+   if (i >= 0) {
+      /* For async DMA, every add_buffer call must add a buffer to the list
+       * no matter how many duplicates there are. This is due to the fact
+       * the DMA CS checker doesn't use NOP packets for offset patching,
+       * but always uses the i-th buffer from the list to patch the i-th
+       * offset. If there are N offsets in a DMA CS, there must also be N
+       * buffers in the relocation list.
+       *
+       * This doesn't have to be done if virtual memory is enabled,
+       * because there is no offset patching with virtual memory.
+       */
+      if (cs->ring_type != RING_DMA || cs->ws->info.r600_has_virtual_memory) {
+         return i;
+      }
+   }
+
+   /* New relocation, check if the backing array is large enough. */
+   if (csc->num_relocs >= csc->max_relocs) {
+      uint32_t size;
+      csc->max_relocs = MAX2(csc->max_relocs + 16, (unsigned)(csc->max_relocs * 1.3));
+
+      size = csc->max_relocs * sizeof(csc->relocs_bo[0]);
+      csc->relocs_bo = realloc(csc->relocs_bo, size);
+
+      size = csc->max_relocs * sizeof(struct drm_radeon_cs_reloc);
+      csc->relocs = realloc(csc->relocs, size);
+
+      csc->chunks[1].chunk_data = (uint64_t)(uintptr_t)csc->relocs;
+   }
+
+   /* Initialize the new relocation. */
+   csc->relocs_bo[csc->num_relocs].bo = NULL;
+   csc->relocs_bo[csc->num_relocs].u.real.priority_usage = 0;
+   radeon_bo_reference(&csc->relocs_bo[csc->num_relocs].bo, bo);
+   p_atomic_inc(&bo->num_cs_references);
+   reloc = &csc->relocs[csc->num_relocs];
+   reloc->handle = bo->handle;
+   reloc->read_domains = 0;
+   reloc->write_domain = 0;
+   reloc->flags = 0;
+
+   csc->reloc_indices_hashlist[hash] = csc->num_relocs;
+
+   csc->chunks[1].length_dw += RELOC_DWORDS;
+
+   return csc->num_relocs++;
 }
 
-static unsigned radeon_add_reloc(struct radeon_drm_cs *cs,
-                                 struct radeon_bo *bo,
-                                 enum radeon_bo_usage usage,
-                                 enum radeon_bo_domain domains,
-                                 unsigned priority,
-                                 enum radeon_bo_domain *added_domains)
+static int radeon_lookup_or_add_slab_buffer(struct radeon_drm_cs *cs,
+                                            struct radeon_bo *bo)
 {
-    struct radeon_cs_context *csc = cs->csc;
-    struct drm_radeon_cs_reloc *reloc;
-    unsigned hash = bo->handle & (Elements(csc->reloc_indices_hashlist)-1);
-    enum radeon_bo_domain rd = usage & RADEON_USAGE_READ ? domains : 0;
-    enum radeon_bo_domain wd = usage & RADEON_USAGE_WRITE ? domains : 0;
-    int i = -1;
+   struct radeon_cs_context *csc = cs->csc;
+   unsigned hash;
+   struct radeon_bo_item *item;
+   int idx;
+   int real_idx;
 
-    priority = MIN2(priority, 15);
-    *added_domains = 0;
+   idx = radeon_lookup_buffer(csc, bo);
+   if (idx >= 0)
+      return idx;
 
-    i = radeon_get_reloc(csc, bo);
+   real_idx = radeon_lookup_or_add_real_buffer(cs, bo->u.slab.real);
 
-    if (i >= 0) {
-        reloc = &csc->relocs[i];
-        update_reloc(reloc, rd, wd, priority, added_domains);
+   /* Check if the backing array is large enough. */
+   if (csc->num_slab_buffers >= csc->max_slab_buffers) {
+      unsigned new_max = MAX2(csc->max_slab_buffers + 16,
+                              (unsigned)(csc->max_slab_buffers * 1.3));
+      struct radeon_bo_item *new_buffers =
+            REALLOC(csc->slab_buffers,
+                    csc->max_slab_buffers * sizeof(*new_buffers),
+                    new_max * sizeof(*new_buffers));
+      if (!new_buffers) {
+         fprintf(stderr, "radeon_lookup_or_add_slab_buffer: allocation failure\n");
+         return -1;
+      }
 
-        /* For async DMA, every add_reloc call must add a buffer to the list
-         * no matter how many duplicates there are. This is due to the fact
-         * the DMA CS checker doesn't use NOP packets for offset patching,
-         * but always uses the i-th buffer from the list to patch the i-th
-         * offset. If there are N offsets in a DMA CS, there must also be N
-         * buffers in the relocation list.
-         *
-         * This doesn't have to be done if virtual memory is enabled,
-         * because there is no offset patching with virtual memory.
-         */
-        if (cs->base.ring_type != RING_DMA || cs->ws->info.r600_virtual_address) {
-            return i;
-        }
-    }
+      csc->max_slab_buffers = new_max;
+      csc->slab_buffers = new_buffers;
+   }
 
-    /* New relocation, check if the backing array is large enough. */
-    if (csc->crelocs >= csc->nrelocs) {
-        uint32_t size;
-        csc->nrelocs += 10;
+   /* Initialize the new relocation. */
+   idx = csc->num_slab_buffers++;
+   item = &csc->slab_buffers[idx];
 
-        size = csc->nrelocs * sizeof(struct radeon_bo*);
-        csc->relocs_bo = realloc(csc->relocs_bo, size);
+   item->bo = NULL;
+   item->u.slab.real_idx = real_idx;
+   radeon_bo_reference(&item->bo, bo);
+   p_atomic_inc(&bo->num_cs_references);
 
-        size = csc->nrelocs * sizeof(struct drm_radeon_cs_reloc);
-        csc->relocs = realloc(csc->relocs, size);
+   hash = bo->hash & (ARRAY_SIZE(csc->reloc_indices_hashlist)-1);
+   csc->reloc_indices_hashlist[hash] = idx;
 
-        csc->chunks[1].chunk_data = (uint64_t)(uintptr_t)csc->relocs;
-    }
-
-    /* Initialize the new relocation. */
-    csc->relocs_bo[csc->crelocs] = NULL;
-    radeon_bo_reference(&csc->relocs_bo[csc->crelocs], bo);
-    p_atomic_inc(&bo->num_cs_references);
-    reloc = &csc->relocs[csc->crelocs];
-    reloc->handle = bo->handle;
-    reloc->read_domains = rd;
-    reloc->write_domain = wd;
-    reloc->flags = priority;
-
-    csc->reloc_indices_hashlist[hash] = csc->crelocs;
-
-    csc->chunks[1].length_dw += RELOC_DWORDS;
-
-    *added_domains = rd | wd;
-    return csc->crelocs++;
+   return idx;
 }
 
-static unsigned radeon_drm_cs_add_reloc(struct radeon_winsys_cs *rcs,
-                                        struct radeon_winsys_cs_handle *buf,
-                                        enum radeon_bo_usage usage,
-                                        enum radeon_bo_domain domains,
-                                        enum radeon_bo_priority priority)
+static unsigned radeon_drm_cs_add_buffer(struct radeon_cmdbuf *rcs,
+                                         struct pb_buffer *buf,
+                                         enum radeon_bo_usage usage,
+                                         enum radeon_bo_domain domains,
+                                         enum radeon_bo_priority priority)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-    struct radeon_bo *bo = (struct radeon_bo*)buf;
-    enum radeon_bo_domain added_domains;
-    unsigned index = radeon_add_reloc(cs, bo, usage, domains, priority, &added_domains);
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct radeon_bo *bo = (struct radeon_bo*)buf;
+   enum radeon_bo_domain added_domains;
 
-    if (added_domains & RADEON_DOMAIN_GTT)
-        cs->csc->used_gart += bo->base.size;
-    if (added_domains & RADEON_DOMAIN_VRAM)
-        cs->csc->used_vram += bo->base.size;
+   /* If VRAM is just stolen system memory, allow both VRAM and
+    * GTT, whichever has free space. If a buffer is evicted from
+    * VRAM to GTT, it will stay there.
+    */
+   if (!cs->ws->info.has_dedicated_vram)
+      domains |= RADEON_DOMAIN_GTT;
 
-    return index;
+   enum radeon_bo_domain rd = usage & RADEON_USAGE_READ ? domains : 0;
+   enum radeon_bo_domain wd = usage & RADEON_USAGE_WRITE ? domains : 0;
+   struct drm_radeon_cs_reloc *reloc;
+   int index;
+
+   if (!bo->handle) {
+      index = radeon_lookup_or_add_slab_buffer(cs, bo);
+      if (index < 0)
+         return 0;
+
+      index = cs->csc->slab_buffers[index].u.slab.real_idx;
+   } else {
+      index = radeon_lookup_or_add_real_buffer(cs, bo);
+   }
+
+   reloc = &cs->csc->relocs[index];
+   added_domains = (rd | wd) & ~(reloc->read_domains | reloc->write_domain);
+   reloc->read_domains |= rd;
+   reloc->write_domain |= wd;
+   reloc->flags = MAX2(reloc->flags, priority);
+   cs->csc->relocs_bo[index].u.real.priority_usage |= 1u << priority;
+
+   if (added_domains & RADEON_DOMAIN_VRAM)
+      cs->base.used_vram += bo->base.size;
+   else if (added_domains & RADEON_DOMAIN_GTT)
+      cs->base.used_gart += bo->base.size;
+
+   return index;
 }
 
-static int radeon_drm_cs_get_reloc(struct radeon_winsys_cs *rcs,
-                                   struct radeon_winsys_cs_handle *buf)
+static int radeon_drm_cs_lookup_buffer(struct radeon_cmdbuf *rcs,
+                                       struct pb_buffer *buf)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
 
-    return radeon_get_reloc(cs->csc, (struct radeon_bo*)buf);
+   return radeon_lookup_buffer(cs->csc, (struct radeon_bo*)buf);
 }
 
-static boolean radeon_drm_cs_validate(struct radeon_winsys_cs *rcs)
+static bool radeon_drm_cs_validate(struct radeon_cmdbuf *rcs)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-    boolean status =
-        cs->csc->used_gart < cs->ws->info.gart_size * 0.8 &&
-        cs->csc->used_vram < cs->ws->info.vram_size * 0.8;
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   bool status =
+         cs->base.used_gart < cs->ws->info.gart_size * 0.8 &&
+         cs->base.used_vram < cs->ws->info.vram_size * 0.8;
 
-    if (status) {
-        cs->csc->validated_crelocs = cs->csc->crelocs;
-    } else {
-        /* Remove lately-added relocations. The validation failed with them
-         * and the CS is about to be flushed because of that. Keep only
-         * the already-validated relocations. */
-        unsigned i;
+   if (status) {
+      cs->csc->num_validated_relocs = cs->csc->num_relocs;
+   } else {
+      /* Remove lately-added buffers. The validation failed with them
+       * and the CS is about to be flushed because of that. Keep only
+       * the already-validated buffers. */
+      unsigned i;
 
-        for (i = cs->csc->validated_crelocs; i < cs->csc->crelocs; i++) {
-            p_atomic_dec(&cs->csc->relocs_bo[i]->num_cs_references);
-            radeon_bo_reference(&cs->csc->relocs_bo[i], NULL);
-        }
-        cs->csc->crelocs = cs->csc->validated_crelocs;
+      for (i = cs->csc->num_validated_relocs; i < cs->csc->num_relocs; i++) {
+         p_atomic_dec(&cs->csc->relocs_bo[i].bo->num_cs_references);
+         radeon_bo_reference(&cs->csc->relocs_bo[i].bo, NULL);
+      }
+      cs->csc->num_relocs = cs->csc->num_validated_relocs;
 
-        /* Flush if there are any relocs. Clean up otherwise. */
-        if (cs->csc->crelocs) {
-            cs->flush_cs(cs->flush_data, RADEON_FLUSH_ASYNC, NULL);
-        } else {
-            radeon_cs_context_cleanup(cs->csc);
+      /* Flush if there are any relocs. Clean up otherwise. */
+      if (cs->csc->num_relocs) {
+         cs->flush_cs(cs->flush_data,
+                      RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
+      } else {
+         radeon_cs_context_cleanup(cs->csc);
+         cs->base.used_vram = 0;
+         cs->base.used_gart = 0;
 
-            assert(cs->base.cdw == 0);
-            if (cs->base.cdw != 0) {
-                fprintf(stderr, "radeon: Unexpected error in %s.\n", __func__);
-            }
-        }
-    }
-    return status;
+         assert(cs->base.current.cdw == 0);
+         if (cs->base.current.cdw != 0) {
+            fprintf(stderr, "radeon: Unexpected error in %s.\n", __func__);
+         }
+      }
+   }
+   return status;
 }
 
-static boolean radeon_drm_cs_memory_below_limit(struct radeon_winsys_cs *rcs, uint64_t vram, uint64_t gtt)
+static bool radeon_drm_cs_check_space(struct radeon_cmdbuf *rcs, unsigned dw,
+                                      bool force_chaining)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-    boolean status =
-        (cs->csc->used_gart + gtt) < cs->ws->info.gart_size * 0.7 &&
-        (cs->csc->used_vram + vram) < cs->ws->info.vram_size * 0.7;
-
-    return status;
+   assert(rcs->current.cdw <= rcs->current.max_dw);
+   return rcs->current.max_dw - rcs->current.cdw >= dw;
 }
 
-void radeon_drm_cs_emit_ioctl_oneshot(struct radeon_drm_cs *cs, struct radeon_cs_context *csc)
+static unsigned radeon_drm_cs_get_buffer_list(struct radeon_cmdbuf *rcs,
+                                              struct radeon_bo_list_item *list)
 {
-    unsigned i;
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   int i;
 
-    if (drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
-                            &csc->cs, sizeof(struct drm_radeon_cs))) {
-        if (debug_get_bool_option("RADEON_DUMP_CS", FALSE)) {
-            unsigned i;
+   if (list) {
+      for (i = 0; i < cs->csc->num_relocs; i++) {
+         list[i].bo_size = cs->csc->relocs_bo[i].bo->base.size;
+         list[i].vm_address = cs->csc->relocs_bo[i].bo->va;
+         list[i].priority_usage = cs->csc->relocs_bo[i].u.real.priority_usage;
+      }
+   }
+   return cs->csc->num_relocs;
+}
 
-            fprintf(stderr, "radeon: The kernel rejected CS, dumping...\n");
-            for (i = 0; i < csc->chunks[0].length_dw; i++) {
-                fprintf(stderr, "0x%08X\n", csc->buf[i]);
-            }
-        } else {
-            fprintf(stderr, "radeon: The kernel rejected CS, "
-                    "see dmesg for more information.\n");
-        }
-    }
+void radeon_drm_cs_emit_ioctl_oneshot(void *job, int thread_index)
+{
+   struct radeon_cs_context *csc = ((struct radeon_drm_cs*)job)->cst;
+   unsigned i;
+   int r;
 
-    if (cs->trace_buf) {
-        radeon_dump_cs_on_lockup(cs, csc);
-    }
+   r = drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
+                           &csc->cs, sizeof(struct drm_radeon_cs));
+   if (r) {
+      if (r == -ENOMEM)
+         fprintf(stderr, "radeon: Not enough memory for command submission.\n");
+      else if (debug_get_bool_option("RADEON_DUMP_CS", false)) {
+         unsigned i;
 
-    for (i = 0; i < csc->crelocs; i++)
-        p_atomic_dec(&csc->relocs_bo[i]->num_active_ioctls);
+         fprintf(stderr, "radeon: The kernel rejected CS, dumping...\n");
+         for (i = 0; i < csc->chunks[0].length_dw; i++) {
+            fprintf(stderr, "0x%08X\n", csc->buf[i]);
+         }
+      } else {
+         fprintf(stderr, "radeon: The kernel rejected CS, "
+                         "see dmesg for more information (%i).\n", r);
+      }
+   }
 
-    radeon_cs_context_cleanup(csc);
+   for (i = 0; i < csc->num_relocs; i++)
+      p_atomic_dec(&csc->relocs_bo[i].bo->num_active_ioctls);
+   for (i = 0; i < csc->num_slab_buffers; i++)
+      p_atomic_dec(&csc->slab_buffers[i].bo->num_active_ioctls);
+
+   radeon_cs_context_cleanup(csc);
 }
 
 /*
  * Make sure previous submission of this cs are completed
  */
-void radeon_drm_cs_sync_flush(struct radeon_winsys_cs *rcs)
+void radeon_drm_cs_sync_flush(struct radeon_cmdbuf *rcs)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
 
-    /* Wait for any pending ioctl to complete. */
-    if (cs->ws->thread) {
-        pipe_semaphore_wait(&cs->flush_completed);
-        pipe_semaphore_signal(&cs->flush_completed);
-    }
+   /* Wait for any pending ioctl of this CS to complete. */
+   if (util_queue_is_initialized(&cs->ws->cs_queue))
+      util_queue_fence_wait(&cs->flush_completed);
 }
 
-DEBUG_GET_ONCE_BOOL_OPTION(noop, "RADEON_NOOP", FALSE)
-
-static void radeon_drm_cs_flush(struct radeon_winsys_cs *rcs,
-                                unsigned flags,
-                                struct pipe_fence_handle **fence,
-                                uint32_t cs_trace_id)
+/* Add the given fence to a slab buffer fence list.
+ *
+ * There is a potential race condition when bo participates in submissions on
+ * two or more threads simultaneously. Since we do not know which of the
+ * submissions will be sent to the GPU first, we have to keep the fences
+ * of all submissions.
+ *
+ * However, fences that belong to submissions that have already returned from
+ * their respective ioctl do not have to be kept, because we know that they
+ * will signal earlier.
+ */
+static void radeon_bo_slab_fence(struct radeon_bo *bo, struct radeon_bo *fence)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-    struct radeon_cs_context *tmp;
+   unsigned dst;
 
-    switch (cs->base.ring_type) {
-    case RING_DMA:
-        /* pad DMA ring to 8 DWs */
-        if (cs->ws->info.chip_class <= SI) {
-            while (rcs->cdw & 7)
-                OUT_CS(&cs->base, 0xf0000000); /* NOP packet */
-        } else {
-            while (rcs->cdw & 7)
-                OUT_CS(&cs->base, 0x00000000); /* NOP packet */
-        }
-        break;
-    case RING_GFX:
-        /* pad DMA ring to 8 DWs to meet CP fetch alignment requirements
-         * r6xx, requires at least 4 dw alignment to avoid a hw bug.
-         * hawaii with old firmware needs type2 nop packet.
-         * accel_working2 with value 3 indicates the new firmware.
-         */
-        if (cs->ws->info.chip_class <= SI ||
-            (cs->ws->info.family == CHIP_HAWAII &&
-             cs->ws->accel_working2 < 3)) {
-            while (rcs->cdw & 7)
-                OUT_CS(&cs->base, 0x80000000); /* type2 nop packet */
-        } else {
-            while (rcs->cdw & 7)
-                OUT_CS(&cs->base, 0xffff1000); /* type3 nop packet */
-        }
-        break;
-    case RING_UVD:
-        while (rcs->cdw & 15)
-            OUT_CS(&cs->base, 0x80000000); /* type2 nop packet */
-        break;
-    default:
-        break;
-    }
+   assert(fence->num_cs_references);
 
-    if (rcs->cdw > RADEON_MAX_CMDBUF_DWORDS) {
-       fprintf(stderr, "radeon: command stream overflowed\n");
-    }
+   /* Cleanup older fences */
+   dst = 0;
+   for (unsigned src = 0; src < bo->u.slab.num_fences; ++src) {
+      if (bo->u.slab.fences[src]->num_cs_references) {
+         bo->u.slab.fences[dst] = bo->u.slab.fences[src];
+         dst++;
+      } else {
+         radeon_bo_reference(&bo->u.slab.fences[src], NULL);
+      }
+   }
+   bo->u.slab.num_fences = dst;
 
-    if (fence) {
-        radeon_fence_reference(fence, NULL);
-        *fence = radeon_cs_create_fence(rcs);
-    }
+   /* Check available space for the new fence */
+   if (bo->u.slab.num_fences >= bo->u.slab.max_fences) {
+      unsigned new_max_fences = bo->u.slab.max_fences + 1;
+      struct radeon_bo **new_fences = REALLOC(bo->u.slab.fences,
+                                              bo->u.slab.max_fences * sizeof(*new_fences),
+                                              new_max_fences * sizeof(*new_fences));
+      if (!new_fences) {
+         fprintf(stderr, "radeon_bo_slab_fence: allocation failure, dropping fence\n");
+         return;
+      }
 
-    radeon_drm_cs_sync_flush(rcs);
+      bo->u.slab.fences = new_fences;
+      bo->u.slab.max_fences = new_max_fences;
+   }
 
-    /* Swap command streams. */
-    tmp = cs->csc;
-    cs->csc = cs->cst;
-    cs->cst = tmp;
-
-    cs->cst->cs_trace_id = cs_trace_id;
-
-    /* If the CS is not empty or overflowed, emit it in a separate thread. */
-    if (cs->base.cdw && cs->base.cdw <= RADEON_MAX_CMDBUF_DWORDS && !debug_get_option_noop()) {
-        unsigned i, crelocs;
-
-        crelocs = cs->cst->crelocs;
-
-        cs->cst->chunks[0].length_dw = cs->base.cdw;
-
-        for (i = 0; i < crelocs; i++) {
-            /* Update the number of active asynchronous CS ioctls for the buffer. */
-            p_atomic_inc(&cs->cst->relocs_bo[i]->num_active_ioctls);
-        }
-
-        switch (cs->base.ring_type) {
-        case RING_DMA:
-            cs->cst->flags[0] = 0;
-            cs->cst->flags[1] = RADEON_CS_RING_DMA;
-            cs->cst->cs.num_chunks = 3;
-            if (cs->ws->info.r600_virtual_address) {
-                cs->cst->flags[0] |= RADEON_CS_USE_VM;
-            }
-            break;
-
-        case RING_UVD:
-            cs->cst->flags[0] = 0;
-            cs->cst->flags[1] = RADEON_CS_RING_UVD;
-            cs->cst->cs.num_chunks = 3;
-            break;
-
-        case RING_VCE:
-            cs->cst->flags[0] = 0;
-            cs->cst->flags[1] = RADEON_CS_RING_VCE;
-            cs->cst->cs.num_chunks = 3;
-            break;
-
-        default:
-        case RING_GFX:
-            cs->cst->flags[0] = 0;
-            cs->cst->flags[1] = RADEON_CS_RING_GFX;
-            cs->cst->cs.num_chunks = 2;
-            if (flags & RADEON_FLUSH_KEEP_TILING_FLAGS) {
-                cs->cst->flags[0] |= RADEON_CS_KEEP_TILING_FLAGS;
-                cs->cst->cs.num_chunks = 3;
-            }
-            if (cs->ws->info.r600_virtual_address) {
-                cs->cst->flags[0] |= RADEON_CS_USE_VM;
-                cs->cst->cs.num_chunks = 3;
-            }
-            if (flags & RADEON_FLUSH_END_OF_FRAME) {
-                cs->cst->flags[0] |= RADEON_CS_END_OF_FRAME;
-                cs->cst->cs.num_chunks = 3;
-            }
-            if (flags & RADEON_FLUSH_COMPUTE) {
-                cs->cst->flags[1] = RADEON_CS_RING_COMPUTE;
-                cs->cst->cs.num_chunks = 3;
-            }
-            break;
-        }
-
-        if (cs->ws->thread) {
-            pipe_semaphore_wait(&cs->flush_completed);
-            radeon_drm_ws_queue_cs(cs->ws, cs);
-            if (!(flags & RADEON_FLUSH_ASYNC))
-                radeon_drm_cs_sync_flush(rcs);
-        } else {
-            radeon_drm_cs_emit_ioctl_oneshot(cs, cs->cst);
-        }
-    } else {
-        radeon_cs_context_cleanup(cs->cst);
-    }
-
-    /* Prepare a new CS. */
-    cs->base.buf = cs->csc->buf;
-    cs->base.cdw = 0;
-
-    cs->ws->num_cs_flushes++;
+   /* Add the new fence */
+   bo->u.slab.fences[bo->u.slab.num_fences] = NULL;
+   radeon_bo_reference(&bo->u.slab.fences[bo->u.slab.num_fences], fence);
+   bo->u.slab.num_fences++;
 }
 
-static void radeon_drm_cs_destroy(struct radeon_winsys_cs *rcs)
-{
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+DEBUG_GET_ONCE_BOOL_OPTION(noop, "RADEON_NOOP", false)
 
-    radeon_drm_cs_sync_flush(rcs);
-    pipe_semaphore_destroy(&cs->flush_completed);
-    radeon_cs_context_cleanup(&cs->csc1);
-    radeon_cs_context_cleanup(&cs->csc2);
-    p_atomic_dec(&cs->ws->num_cs);
-    radeon_destroy_cs_context(&cs->csc1);
-    radeon_destroy_cs_context(&cs->csc2);
-    FREE(cs);
+static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
+                               unsigned flags,
+                               struct pipe_fence_handle **pfence)
+{
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct radeon_cs_context *tmp;
+
+   switch (cs->ring_type) {
+   case RING_DMA:
+      /* pad DMA ring to 8 DWs */
+      if (cs->ws->info.chip_class <= GFX6) {
+         while (rcs->current.cdw & 7)
+            radeon_emit(&cs->base, 0xf0000000); /* NOP packet */
+      } else {
+         while (rcs->current.cdw & 7)
+            radeon_emit(&cs->base, 0x00000000); /* NOP packet */
+      }
+      break;
+   case RING_GFX:
+      /* pad GFX ring to 8 DWs to meet CP fetch alignment requirements
+       * r6xx, requires at least 4 dw alignment to avoid a hw bug.
+       */
+      if (cs->ws->info.gfx_ib_pad_with_type2) {
+         while (rcs->current.cdw & 7)
+            radeon_emit(&cs->base, 0x80000000); /* type2 nop packet */
+      } else {
+         while (rcs->current.cdw & 7)
+            radeon_emit(&cs->base, 0xffff1000); /* type3 nop packet */
+      }
+      break;
+   case RING_UVD:
+      while (rcs->current.cdw & 15)
+         radeon_emit(&cs->base, 0x80000000); /* type2 nop packet */
+      break;
+   default:
+      break;
+   }
+
+   if (rcs->current.cdw > rcs->current.max_dw) {
+      fprintf(stderr, "radeon: command stream overflowed\n");
+   }
+
+   if (pfence || cs->csc->num_slab_buffers) {
+      struct pipe_fence_handle *fence;
+
+      if (cs->next_fence) {
+         fence = cs->next_fence;
+         cs->next_fence = NULL;
+      } else {
+         fence = radeon_cs_create_fence(rcs);
+      }
+
+      if (fence) {
+         if (pfence)
+            radeon_fence_reference(pfence, fence);
+
+         mtx_lock(&cs->ws->bo_fence_lock);
+         for (unsigned i = 0; i < cs->csc->num_slab_buffers; ++i) {
+            struct radeon_bo *bo = cs->csc->slab_buffers[i].bo;
+            p_atomic_inc(&bo->num_active_ioctls);
+            radeon_bo_slab_fence(bo, (struct radeon_bo *)fence);
+         }
+         mtx_unlock(&cs->ws->bo_fence_lock);
+
+         radeon_fence_reference(&fence, NULL);
+      }
+   } else {
+      radeon_fence_reference(&cs->next_fence, NULL);
+   }
+
+   radeon_drm_cs_sync_flush(rcs);
+
+   /* Swap command streams. */
+   tmp = cs->csc;
+   cs->csc = cs->cst;
+   cs->cst = tmp;
+
+   /* If the CS is not empty or overflowed, emit it in a separate thread. */
+   if (cs->base.current.cdw && cs->base.current.cdw <= cs->base.current.max_dw && !debug_get_option_noop()) {
+      unsigned i, num_relocs;
+
+      num_relocs = cs->cst->num_relocs;
+
+      cs->cst->chunks[0].length_dw = cs->base.current.cdw;
+
+      for (i = 0; i < num_relocs; i++) {
+         /* Update the number of active asynchronous CS ioctls for the buffer. */
+         p_atomic_inc(&cs->cst->relocs_bo[i].bo->num_active_ioctls);
+      }
+
+      switch (cs->ring_type) {
+      case RING_DMA:
+         cs->cst->flags[0] = 0;
+         cs->cst->flags[1] = RADEON_CS_RING_DMA;
+         cs->cst->cs.num_chunks = 3;
+         if (cs->ws->info.r600_has_virtual_memory) {
+            cs->cst->flags[0] |= RADEON_CS_USE_VM;
+         }
+         break;
+
+      case RING_UVD:
+         cs->cst->flags[0] = 0;
+         cs->cst->flags[1] = RADEON_CS_RING_UVD;
+         cs->cst->cs.num_chunks = 3;
+         break;
+
+      case RING_VCE:
+         cs->cst->flags[0] = 0;
+         cs->cst->flags[1] = RADEON_CS_RING_VCE;
+         cs->cst->cs.num_chunks = 3;
+         break;
+
+      default:
+      case RING_GFX:
+      case RING_COMPUTE:
+         cs->cst->flags[0] = RADEON_CS_KEEP_TILING_FLAGS;
+         cs->cst->flags[1] = RADEON_CS_RING_GFX;
+         cs->cst->cs.num_chunks = 3;
+
+         if (cs->ws->info.r600_has_virtual_memory) {
+            cs->cst->flags[0] |= RADEON_CS_USE_VM;
+            cs->cst->cs.num_chunks = 3;
+         }
+         if (flags & PIPE_FLUSH_END_OF_FRAME) {
+            cs->cst->flags[0] |= RADEON_CS_END_OF_FRAME;
+            cs->cst->cs.num_chunks = 3;
+         }
+         if (cs->ring_type == RING_COMPUTE) {
+            cs->cst->flags[1] = RADEON_CS_RING_COMPUTE;
+            cs->cst->cs.num_chunks = 3;
+         }
+         break;
+      }
+
+      if (util_queue_is_initialized(&cs->ws->cs_queue)) {
+         util_queue_add_job(&cs->ws->cs_queue, cs, &cs->flush_completed,
+                            radeon_drm_cs_emit_ioctl_oneshot, NULL, 0);
+         if (!(flags & PIPE_FLUSH_ASYNC))
+            radeon_drm_cs_sync_flush(rcs);
+      } else {
+         radeon_drm_cs_emit_ioctl_oneshot(cs, 0);
+      }
+   } else {
+      radeon_cs_context_cleanup(cs->cst);
+   }
+
+   /* Prepare a new CS. */
+   cs->base.current.buf = cs->csc->buf;
+   cs->base.current.cdw = 0;
+   cs->base.used_vram = 0;
+   cs->base.used_gart = 0;
+
+   if (cs->ring_type == RING_GFX)
+      cs->ws->num_gfx_IBs++;
+   else if (cs->ring_type == RING_DMA)
+      cs->ws->num_sdma_IBs++;
+   return 0;
 }
 
-static boolean radeon_bo_is_referenced(struct radeon_winsys_cs *rcs,
-                                       struct radeon_winsys_cs_handle *_buf,
-                                       enum radeon_bo_usage usage)
+static void radeon_drm_cs_destroy(struct radeon_cmdbuf *rcs)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-    struct radeon_bo *bo = (struct radeon_bo*)_buf;
-    int index;
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
 
-    if (!bo->num_cs_references)
-        return FALSE;
+   radeon_drm_cs_sync_flush(rcs);
+   util_queue_fence_destroy(&cs->flush_completed);
+   radeon_cs_context_cleanup(&cs->csc1);
+   radeon_cs_context_cleanup(&cs->csc2);
+   p_atomic_dec(&cs->ws->num_cs);
+   radeon_destroy_cs_context(&cs->csc1);
+   radeon_destroy_cs_context(&cs->csc2);
+   radeon_fence_reference(&cs->next_fence, NULL);
+   FREE(cs);
+}
 
-    index = radeon_get_reloc(cs->csc, bo);
-    if (index == -1)
-        return FALSE;
+static bool radeon_bo_is_referenced(struct radeon_cmdbuf *rcs,
+                                    struct pb_buffer *_buf,
+                                    enum radeon_bo_usage usage)
+{
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct radeon_bo *bo = (struct radeon_bo*)_buf;
+   int index;
 
-    if ((usage & RADEON_USAGE_WRITE) && cs->csc->relocs[index].write_domain)
-        return TRUE;
-    if ((usage & RADEON_USAGE_READ) && cs->csc->relocs[index].read_domains)
-        return TRUE;
+   if (!bo->num_cs_references)
+      return false;
 
-    return FALSE;
+   index = radeon_lookup_buffer(cs->csc, bo);
+   if (index == -1)
+      return false;
+
+   if (!bo->handle)
+      index = cs->csc->slab_buffers[index].u.slab.real_idx;
+
+   if ((usage & RADEON_USAGE_WRITE) && cs->csc->relocs[index].write_domain)
+      return true;
+   if ((usage & RADEON_USAGE_READ) && cs->csc->relocs[index].read_domains)
+      return true;
+
+   return false;
 }
 
 /* FENCES */
 
-static struct pipe_fence_handle *
-radeon_cs_create_fence(struct radeon_winsys_cs *rcs)
+static struct pipe_fence_handle *radeon_cs_create_fence(struct radeon_cmdbuf *rcs)
 {
-    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-    struct pb_buffer *fence;
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct pb_buffer *fence;
 
-    /* Create a fence, which is a dummy BO. */
-    fence = cs->ws->base.buffer_create(&cs->ws->base, 1, 1, TRUE,
-                                       RADEON_DOMAIN_GTT, 0);
-    /* Add the fence as a dummy relocation. */
-    cs->ws->base.cs_add_reloc(rcs, cs->ws->base.buffer_get_cs_handle(fence),
+   /* Create a fence, which is a dummy BO. */
+   fence = cs->ws->base.buffer_create(&cs->ws->base, 1, 1,
+                                      RADEON_DOMAIN_GTT,
+                                      RADEON_FLAG_NO_SUBALLOC
+                                      | RADEON_FLAG_NO_INTERPROCESS_SHARING);
+   if (!fence)
+      return NULL;
+
+   /* Add the fence as a dummy relocation. */
+   cs->ws->base.cs_add_buffer(rcs, fence,
                               RADEON_USAGE_READWRITE, RADEON_DOMAIN_GTT,
-                              RADEON_PRIO_MIN);
-    return (struct pipe_fence_handle*)fence;
+                              RADEON_PRIO_FENCE);
+   return (struct pipe_fence_handle*)fence;
 }
 
 static bool radeon_fence_wait(struct radeon_winsys *ws,
                               struct pipe_fence_handle *fence,
                               uint64_t timeout)
 {
-    struct pb_buffer *rfence = (struct pb_buffer*)fence;
-
-    if (timeout == 0)
-        return !ws->buffer_is_busy(rfence, RADEON_USAGE_READWRITE);
-
-    if (timeout != PIPE_TIMEOUT_INFINITE) {
-        int64_t start_time = os_time_get();
-
-        /* Convert to microseconds. */
-        timeout /= 1000;
-
-        /* Wait in a loop. */
-        while (ws->buffer_is_busy(rfence, RADEON_USAGE_READWRITE)) {
-            if (os_time_get() - start_time >= timeout) {
-                return FALSE;
-            }
-            os_time_sleep(10);
-        }
-        return TRUE;
-    }
-
-    ws->buffer_wait(rfence, RADEON_USAGE_READWRITE);
-    return TRUE;
+   return ws->buffer_wait((struct pb_buffer*)fence, timeout,
+                          RADEON_USAGE_READWRITE);
 }
 
 static void radeon_fence_reference(struct pipe_fence_handle **dst,
                                    struct pipe_fence_handle *src)
 {
-    pb_reference((struct pb_buffer**)dst, (struct pb_buffer*)src);
+   pb_reference((struct pb_buffer**)dst, (struct pb_buffer*)src);
+}
+
+static struct pipe_fence_handle *radeon_drm_cs_get_next_fence(struct radeon_cmdbuf *rcs)
+{
+   struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
+   struct pipe_fence_handle *fence = NULL;
+
+   if (cs->next_fence) {
+      radeon_fence_reference(&fence, cs->next_fence);
+      return fence;
+   }
+
+   fence = radeon_cs_create_fence(rcs);
+   if (!fence)
+      return NULL;
+
+   radeon_fence_reference(&cs->next_fence, fence);
+   return fence;
+}
+
+static void
+radeon_drm_cs_add_fence_dependency(struct radeon_cmdbuf *cs,
+                                   struct pipe_fence_handle *fence,
+                                   unsigned dependency_flags)
+{
+   /* TODO: Handle the following unlikely multi-threaded scenario:
+    *
+    *  Thread 1 / Context 1                   Thread 2 / Context 2
+    *  --------------------                   --------------------
+    *  f = cs_get_next_fence()
+    *                                         cs_add_fence_dependency(f)
+    *                                         cs_flush()
+    *  cs_flush()
+    *
+    * We currently assume that this does not happen because we don't support
+    * asynchronous flushes on Radeon.
+    */
 }
 
 void radeon_drm_cs_init_functions(struct radeon_drm_winsys *ws)
 {
-    ws->base.cs_create = radeon_drm_cs_create;
-    ws->base.cs_destroy = radeon_drm_cs_destroy;
-    ws->base.cs_add_reloc = radeon_drm_cs_add_reloc;
-    ws->base.cs_get_reloc = radeon_drm_cs_get_reloc;
-    ws->base.cs_validate = radeon_drm_cs_validate;
-    ws->base.cs_memory_below_limit = radeon_drm_cs_memory_below_limit;
-    ws->base.cs_flush = radeon_drm_cs_flush;
-    ws->base.cs_is_buffer_referenced = radeon_bo_is_referenced;
-    ws->base.cs_sync_flush = radeon_drm_cs_sync_flush;
-    ws->base.fence_wait = radeon_fence_wait;
-    ws->base.fence_reference = radeon_fence_reference;
+   ws->base.ctx_create = radeon_drm_ctx_create;
+   ws->base.ctx_destroy = radeon_drm_ctx_destroy;
+   ws->base.ctx_query_reset_status = radeon_drm_ctx_query_reset_status;
+   ws->base.cs_create = radeon_drm_cs_create;
+   ws->base.cs_destroy = radeon_drm_cs_destroy;
+   ws->base.cs_add_buffer = radeon_drm_cs_add_buffer;
+   ws->base.cs_lookup_buffer = radeon_drm_cs_lookup_buffer;
+   ws->base.cs_validate = radeon_drm_cs_validate;
+   ws->base.cs_check_space = radeon_drm_cs_check_space;
+   ws->base.cs_get_buffer_list = radeon_drm_cs_get_buffer_list;
+   ws->base.cs_flush = radeon_drm_cs_flush;
+   ws->base.cs_get_next_fence = radeon_drm_cs_get_next_fence;
+   ws->base.cs_is_buffer_referenced = radeon_bo_is_referenced;
+   ws->base.cs_sync_flush = radeon_drm_cs_sync_flush;
+   ws->base.cs_add_fence_dependency = radeon_drm_cs_add_fence_dependency;
+   ws->base.fence_wait = radeon_fence_wait;
+   ws->base.fence_reference = radeon_fence_reference;
 }

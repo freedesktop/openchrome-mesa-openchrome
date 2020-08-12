@@ -23,16 +23,17 @@
  */
 
 
-
+#include "c99_math.h"
 #include "main/glheader.h"
-#include "main/colormac.h"
 #include "main/light.h"
 #include "main/macros.h"
-#include "main/imports.h"
-#include "main/simple_list.h"
+
+#include "util/simple_list.h"
 #include "main/mtypes.h"
 
 #include "math/m_translate.h"
+
+#include "util/bitscan.h"
 
 #include "t_context.h"
 #include "t_pipeline.h"
@@ -123,7 +124,7 @@ validate_shine_table( struct gl_context *ctx, GLuint side, GLfloat shininess )
    struct tnl_shine_tab *list = tnl->_ShineTabList;
    struct tnl_shine_tab *s;
 
-   ASSERT(side < 2);
+   assert(side < 2);
 
    foreach(s, list)
       if ( s->shininess == shininess )
@@ -138,23 +139,23 @@ validate_shine_table( struct gl_context *ctx, GLuint side, GLfloat shininess )
 	    break;
 
       m = s->tab;
-      m[0] = 0.0;
-      if (shininess == 0.0) {
+      m[0] = 0.0F;
+      if (shininess == 0.0F) {
 	 for (j = 1 ; j <= SHINE_TABLE_SIZE ; j++)
-	    m[j] = 1.0;
+	    m[j] = 1.0F;
       }
       else {
 	 for (j = 1 ; j < SHINE_TABLE_SIZE ; j++) {
-            GLdouble t, x = j / (GLfloat) (SHINE_TABLE_SIZE - 1);
-            if (x < 0.005) /* underflow check */
-               x = 0.005;
-            t = pow(x, shininess);
-	    if (t > 1e-20)
-	       m[j] = (GLfloat) t;
+            GLfloat t, x = j / (GLfloat) (SHINE_TABLE_SIZE - 1);
+            if (x < 0.005F) /* underflow check */
+               x = 0.005F;
+            t = powf(x, shininess);
+	    if (t > 1e-20F)
+	       m[j] = t;
 	    else
-	       m[j] = 0.0;
+	       m[j] = 0.0F;
 	 }
-	 m[SHINE_TABLE_SIZE] = 1.0;
+	 m[SHINE_TABLE_SIZE] = 1.0F;
       }
 
       s->shininess = shininess;
@@ -174,7 +175,7 @@ _tnl_validate_shine_tables( struct gl_context *ctx )
 {
    TNLcontext *tnl = TNL_CONTEXT(ctx);
    GLfloat shininess;
-   
+
    shininess = ctx->Light.Material.Attrib[MAT_ATTRIB_FRONT_SHININESS][0];
    if (!tnl->_ShineTable[0] || tnl->_ShineTable[0]->shininess != shininess)
       validate_shine_table( ctx, 0, shininess );
@@ -204,7 +205,7 @@ update_materials(struct gl_context *ctx, struct light_stage_data *store)
       /* increment src vertex color pointer */
       STRIDE_F(store->mat[i].ptr, store->mat[i].stride);
    }
-      
+
    /* recompute derived light/material values */
    _mesa_update_material( ctx, store->mat_bitmask );
    /* XXX we should only call this if we're tracking/changing the specular
@@ -223,7 +224,7 @@ prepare_materials(struct gl_context *ctx,
                   struct vertex_buffer *VB, struct light_stage_data *store)
 {
    GLuint i;
-   
+
    store->mat_count = 0;
    store->mat_bitmask = 0;
 
@@ -232,10 +233,12 @@ prepare_materials(struct gl_context *ctx,
     * with the color pointer for each one.
     */
    if (ctx->Light.ColorMaterialEnabled) {
-      const GLuint bitmask = ctx->Light._ColorMaterialBitmask;
-      for (i = 0 ; i < MAT_ATTRIB_MAX ; i++)
-	 if (bitmask & (1<<i))
-	    VB->AttribPtr[_TNL_ATTRIB_MAT_FRONT_AMBIENT + i] = VB->AttribPtr[_TNL_ATTRIB_COLOR0];
+      GLbitfield bitmask = ctx->Light._ColorMaterialBitmask;
+      while (bitmask) {
+         const int i = u_bit_scan(&bitmask);
+         VB->AttribPtr[_TNL_ATTRIB_MAT_FRONT_AMBIENT + i] =
+            VB->AttribPtr[_TNL_ATTRIB_COLOR0];
+      }
    }
 
    /* Now, for each material attribute that's tracking vertex color, save
@@ -322,7 +325,7 @@ static void init_lighting_tables( void )
 }
 
 
-static GLboolean run_lighting( struct gl_context *ctx, 
+static GLboolean run_lighting( struct gl_context *ctx,
 			       struct tnl_pipeline_stage *stage )
 {
    struct light_stage_data *store = LIGHT_STAGE_DATA(stage);
@@ -351,7 +354,7 @@ static GLboolean run_lighting( struct gl_context *ctx,
 	  */
 	 _mesa_vector4f_clean_elem(&store->Input, VB->Count, 2);
       }
-	 
+
       if (input->size <= 1) {
 	 /* Clean y.
 	  */
@@ -360,7 +363,7 @@ static GLboolean run_lighting( struct gl_context *ctx,
 
       input = &store->Input;
    }
-   
+
    idx = 0;
 
    if (prepare_materials( ctx, VB, store ))
@@ -370,7 +373,7 @@ static GLboolean run_lighting( struct gl_context *ctx,
       idx |= LIGHT_TWOSIDE;
 
    /* The individual functions know about replaying side-effects
-    * vs. full re-execution. 
+    * vs. full re-execution.
     */
    store->light_func_tab[idx]( ctx, VB, stage, input );
 
@@ -395,7 +398,8 @@ static void validate_lighting( struct gl_context *ctx,
 	 tab = _tnl_light_tab;
    }
    else {
-      if (ctx->Light.EnabledList.next == ctx->Light.EnabledList.prev)
+      /* Power of two means only a single active light. */
+      if (util_is_power_of_two_or_zero(ctx->Light._EnabledLights))
 	 tab = _tnl_light_fast_single_tab;
       else
 	 tab = _tnl_light_fast_tab;

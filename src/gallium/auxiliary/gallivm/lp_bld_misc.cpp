@@ -32,14 +32,6 @@
  */
 
 
-#ifndef __STDC_LIMIT_MACROS
-#define __STDC_LIMIT_MACROS
-#endif
-
-#ifndef __STDC_CONSTANT_MACROS
-#define __STDC_CONSTANT_MACROS
-#endif
-
 // Undef these vars just to silence warnings
 #undef PACKAGE_BUGREPORT
 #undef PACKAGE_NAME
@@ -50,31 +42,54 @@
 
 #include <stddef.h>
 
+#include <llvm/Config/llvm-config.h>
+
+#if LLVM_VERSION_MAJOR < 7
+// Workaround http://llvm.org/PR23628
+#pragma push_macro("DEBUG")
+#undef DEBUG
+#endif
+
+#include <llvm/Config/llvm-config.h>
 #include <llvm-c/Core.h>
+#include <llvm-c/Support.h>
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 #include <llvm/ADT/Triple.h>
-#if HAVE_LLVM < 0x0306
-#include <llvm/ExecutionEngine/JITMemoryManager.h>
-#else
+#include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
-#endif
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Host.h>
 #include <llvm/Support/PrettyStackTrace.h>
-
+#include <llvm/ExecutionEngine/ObjectCache.h>
 #include <llvm/Support/TargetSelect.h>
 
+#if LLVM_VERSION_MAJOR < 11
+#include <llvm/IR/CallSite.h>
+#endif
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/CBindingWrapping.h>
 
+#include <llvm/Config/llvm-config.h>
+#if LLVM_USE_INTEL_JITEVENTS
+#include <llvm/ExecutionEngine/JITEventListener.h>
+#endif
+
+#if LLVM_VERSION_MAJOR < 7
+// Workaround http://llvm.org/PR23628
+#pragma pop_macro("DEBUG")
+#endif
+
+#include "c11/threads.h"
+#include "os/os_thread.h"
 #include "pipe/p_config.h"
 #include "util/u_debug.h"
 #include "util/u_cpu_detect.h"
 
 #include "lp_bld_misc.h"
+#include "lp_bld_debug.h"
 
 namespace {
 
@@ -92,18 +107,10 @@ static LLVMEnsureMultithreaded lLVMEnsureMultithreaded;
 
 }
 
-extern "C" void
-lp_set_target_options(void)
-{
-#if HAVE_LLVM < 0x0304
-   /*
-    * By default LLVM adds a signal handler to output a pretty stack trace.
-    * This signal handler is never removed, causing problems when unloading the
-    * shared object where the gallium driver resides.
-    */
-   llvm::DisablePrettyStackTrace = true;
-#endif
+static once_flag init_native_targets_once_flag = ONCE_FLAG_INIT;
 
+static void init_native_targets()
+{
    // If we have a native target, initialize it to ensure it is linked in and
    // usable by the JIT.
    llvm::InitializeNativeTarget();
@@ -111,40 +118,61 @@ lp_set_target_options(void)
    llvm::InitializeNativeTargetAsmPrinter();
 
    llvm::InitializeNativeTargetDisassembler();
-}
-
-
-extern "C"
-LLVMValueRef
-lp_build_load_volatile(LLVMBuilderRef B, LLVMValueRef PointerVal,
-                       const char *Name)
-{
-   return llvm::wrap(llvm::unwrap(B)->CreateLoad(llvm::unwrap(PointerVal), true, Name));
-}
-
-
-extern "C"
-void
-lp_set_load_alignment(LLVMValueRef Inst,
-                       unsigned Align)
-{
-   llvm::unwrap<llvm::LoadInst>(Inst)->setAlignment(Align);
-}
-
-extern "C"
-void
-lp_set_store_alignment(LLVMValueRef Inst,
-                       unsigned Align)
-{
-   llvm::unwrap<llvm::StoreInst>(Inst)->setAlignment(Align);
-}
-
-
-#if HAVE_LLVM < 0x0306
-typedef llvm::JITMemoryManager BaseMemoryManager;
-#else
-typedef llvm::RTDyldMemoryManager BaseMemoryManager;
+#if DEBUG
+   {
+      char *env_llc_options = getenv("GALLIVM_LLC_OPTIONS");
+      if (env_llc_options) {
+         char *option;
+         char *options[64] = {(char *) "llc"};      // Warning without cast
+         int   n;
+         for (n = 0, option = strtok(env_llc_options, " "); option; n++, option = strtok(NULL, " ")) {
+            options[n + 1] = option;
+         }
+         if (gallivm_debug & (GALLIVM_DEBUG_IR | GALLIVM_DEBUG_ASM | GALLIVM_DEBUG_DUMP_BC)) {
+            debug_printf("llc additional options (%d):\n", n);
+            for (int i = 1; i <= n; i++)
+               debug_printf("\t%s\n", options[i]);
+            debug_printf("\n");
+         }
+         LLVMParseCommandLineOptions(n + 1, options, NULL);
+      }
+   }
 #endif
+}
+
+extern "C" void
+lp_set_target_options(void)
+{
+   /* The llvm target registry is not thread-safe, so drivers and gallium frontends
+    * that want to initialize targets should use the lp_set_target_options()
+    * function to safely initialize targets.
+    *
+    * LLVM targets should be initialized before the driver or gallium frontend tries
+    * to access the registry.
+    */
+   call_once(&init_native_targets_once_flag, init_native_targets);
+}
+
+extern "C"
+LLVMTargetLibraryInfoRef
+gallivm_create_target_library_info(const char *triple)
+{
+   return reinterpret_cast<LLVMTargetLibraryInfoRef>(
+   new llvm::TargetLibraryInfoImpl(
+   llvm::Triple(triple)));
+}
+
+extern "C"
+void
+gallivm_dispose_target_library_info(LLVMTargetLibraryInfoRef library_info)
+{
+   delete reinterpret_cast<
+   llvm::TargetLibraryInfoImpl
+   *>(library_info);
+}
+
+
+typedef llvm::RTDyldMemoryManager BaseMemoryManager;
 
 
 /*
@@ -158,96 +186,9 @@ class DelegatingJITMemoryManager : public BaseMemoryManager {
       virtual BaseMemoryManager *mgr() const = 0;
 
    public:
-#if HAVE_LLVM < 0x0306
-      /*
-       * From JITMemoryManager
-       */
-      virtual void setMemoryWritable() {
-         mgr()->setMemoryWritable();
-      }
-      virtual void setMemoryExecutable() {
-         mgr()->setMemoryExecutable();
-      }
-      virtual void setPoisonMemory(bool poison) {
-         mgr()->setPoisonMemory(poison);
-      }
-      virtual void AllocateGOT() {
-         mgr()->AllocateGOT();
-         /*
-          * isManagingGOT() is not virtual in base class so we can't delegate.
-          * Instead we mirror the value of HasGOT in our instance.
-          */
-         HasGOT = mgr()->isManagingGOT();
-      }
-      virtual uint8_t *getGOTBase() const {
-         return mgr()->getGOTBase();
-      }
-      virtual uint8_t *startFunctionBody(const llvm::Function *F,
-                                         uintptr_t &ActualSize) {
-         return mgr()->startFunctionBody(F, ActualSize);
-      }
-      virtual uint8_t *allocateStub(const llvm::GlobalValue *F,
-                                    unsigned StubSize,
-                                    unsigned Alignment) {
-         return mgr()->allocateStub(F, StubSize, Alignment);
-      }
-      virtual void endFunctionBody(const llvm::Function *F,
-                                   uint8_t *FunctionStart,
-                                   uint8_t *FunctionEnd) {
-         mgr()->endFunctionBody(F, FunctionStart, FunctionEnd);
-      }
-      virtual uint8_t *allocateSpace(intptr_t Size, unsigned Alignment) {
-         return mgr()->allocateSpace(Size, Alignment);
-      }
-      virtual uint8_t *allocateGlobal(uintptr_t Size, unsigned Alignment) {
-         return mgr()->allocateGlobal(Size, Alignment);
-      }
-      virtual void deallocateFunctionBody(void *Body) {
-         mgr()->deallocateFunctionBody(Body);
-      }
-#if HAVE_LLVM < 0x0304
-      virtual uint8_t *startExceptionTable(const llvm::Function *F,
-                                           uintptr_t &ActualSize) {
-         return mgr()->startExceptionTable(F, ActualSize);
-      }
-      virtual void endExceptionTable(const llvm::Function *F,
-                                     uint8_t *TableStart,
-                                     uint8_t *TableEnd,
-                                     uint8_t *FrameRegister) {
-         mgr()->endExceptionTable(F, TableStart, TableEnd,
-                                  FrameRegister);
-      }
-      virtual void deallocateExceptionTable(void *ET) {
-         mgr()->deallocateExceptionTable(ET);
-      }
-#endif
-      virtual bool CheckInvariants(std::string &s) {
-         return mgr()->CheckInvariants(s);
-      }
-      virtual size_t GetDefaultCodeSlabSize() {
-         return mgr()->GetDefaultCodeSlabSize();
-      }
-      virtual size_t GetDefaultDataSlabSize() {
-         return mgr()->GetDefaultDataSlabSize();
-      }
-      virtual size_t GetDefaultStubSlabSize() {
-         return mgr()->GetDefaultStubSlabSize();
-      }
-      virtual unsigned GetNumCodeSlabs() {
-         return mgr()->GetNumCodeSlabs();
-      }
-      virtual unsigned GetNumDataSlabs() {
-         return mgr()->GetNumDataSlabs();
-      }
-      virtual unsigned GetNumStubSlabs() {
-         return mgr()->GetNumStubSlabs();
-      }
-#endif
-
       /*
        * From RTDyldMemoryManager
        */
-#if HAVE_LLVM >= 0x0304
       virtual uint8_t *allocateCodeSection(uintptr_t Size,
                                            unsigned Alignment,
                                            unsigned SectionID,
@@ -255,51 +196,34 @@ class DelegatingJITMemoryManager : public BaseMemoryManager {
          return mgr()->allocateCodeSection(Size, Alignment, SectionID,
                                            SectionName);
       }
-#else
-      virtual uint8_t *allocateCodeSection(uintptr_t Size,
-                                           unsigned Alignment,
-                                           unsigned SectionID) {
-         return mgr()->allocateCodeSection(Size, Alignment, SectionID);
-      }
-#endif
       virtual uint8_t *allocateDataSection(uintptr_t Size,
                                            unsigned Alignment,
                                            unsigned SectionID,
-#if HAVE_LLVM >= 0x0304
                                            llvm::StringRef SectionName,
-#endif
                                            bool IsReadOnly) {
          return mgr()->allocateDataSection(Size, Alignment, SectionID,
-#if HAVE_LLVM >= 0x0304
                                            SectionName,
-#endif
                                            IsReadOnly);
       }
-#if HAVE_LLVM >= 0x0304
       virtual void registerEHFrames(uint8_t *Addr, uint64_t LoadAddr, size_t Size) {
          mgr()->registerEHFrames(Addr, LoadAddr, Size);
       }
-      virtual void deregisterEHFrames(uint8_t *Addr, uint64_t LoadAddr, size_t Size) {
-         mgr()->deregisterEHFrames(Addr, LoadAddr, Size);
+#if LLVM_VERSION_MAJOR >= 5
+      virtual void deregisterEHFrames() {
+         mgr()->deregisterEHFrames();
       }
 #else
-      virtual void registerEHFrames(llvm::StringRef SectionData) {
-         mgr()->registerEHFrames(SectionData);
+      virtual void deregisterEHFrames(uint8_t *Addr, uint64_t LoadAddr, size_t Size) {
+         mgr()->deregisterEHFrames(Addr, LoadAddr, Size);
       }
 #endif
       virtual void *getPointerToNamedFunction(const std::string &Name,
                                               bool AbortOnFailure=true) {
          return mgr()->getPointerToNamedFunction(Name, AbortOnFailure);
       }
-#if HAVE_LLVM <= 0x0303
-      virtual bool applyPermissions(std::string *ErrMsg = 0) {
-         return mgr()->applyPermissions(ErrMsg);
-      }
-#else
       virtual bool finalizeMemory(std::string *ErrMsg = 0) {
          return mgr()->finalizeMemory(ErrMsg);
       }
-#endif
 };
 
 
@@ -328,21 +252,6 @@ class ShaderMemoryManager : public DelegatingJITMemoryManager {
       }
 
       ~GeneratedCode() {
-         /*
-          * Deallocate things as previously requested and
-          * free shared manager when no longer used.
-          */
-#if HAVE_LLVM < 0x0306
-         Vec::iterator i;
-
-         assert(TheMM);
-         for ( i = FunctionBody.begin(); i != FunctionBody.end(); ++i )
-            TheMM->deallocateFunctionBody(*i);
-#if HAVE_LLVM < 0x0304
-         for ( i = ExceptionTable.begin(); i != ExceptionTable.end(); ++i )
-            TheMM->deallocateExceptionTable(*i);
-#endif /* HAVE_LLVM < 0x0304 */
-#endif /* HAVE_LLVM < 0x0306 */
       }
    };
 
@@ -374,19 +283,42 @@ class ShaderMemoryManager : public DelegatingJITMemoryManager {
          delete (GeneratedCode *) code;
       }
 
-#if HAVE_LLVM < 0x0304
-      virtual void deallocateExceptionTable(void *ET) {
-         // remember for later deallocation
-         code->ExceptionTable.push_back(ET);
-      }
-#endif
-
       virtual void deallocateFunctionBody(void *Body) {
          // remember for later deallocation
          code->FunctionBody.push_back(Body);
       }
 };
 
+class LPObjectCache : public llvm::ObjectCache {
+private:
+   bool has_object;
+   struct lp_cached_code *cache_out;
+public:
+   LPObjectCache(struct lp_cached_code *cache) {
+      cache_out = cache;
+      has_object = false;
+   }
+
+   ~LPObjectCache() {
+   }
+   void notifyObjectCompiled(const llvm::Module *M, llvm::MemoryBufferRef Obj) {
+      const std::string ModuleID = M->getModuleIdentifier();
+      if (has_object)
+         fprintf(stderr, "CACHE ALREADY HAS MODULE OBJECT\n");
+      has_object = true;
+      cache_out->data_size = Obj.getBufferSize();
+      cache_out->data = malloc(cache_out->data_size);
+      memcpy(cache_out->data, Obj.getBufferStart(), cache_out->data_size);
+   }
+
+   virtual std::unique_ptr<llvm::MemoryBuffer> getObject(const llvm::Module *M) {
+      if (cache_out->data_size) {
+         return llvm::MemoryBuffer::getMemBuffer(llvm::StringRef((const char *)cache_out->data, cache_out->data_size), "", false);
+      }
+      return NULL;
+   }
+
+};
 
 /**
  * Same as LLVMCreateJITCompilerForModule, but:
@@ -402,20 +334,16 @@ extern "C"
 LLVMBool
 lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
                                         lp_generated_code **OutCode,
+                                        struct lp_cached_code *cache_out,
                                         LLVMModuleRef M,
                                         LLVMMCJITMemoryManagerRef CMM,
                                         unsigned OptLevel,
-                                        int useMCJIT,
                                         char **OutError)
 {
    using namespace llvm;
 
    std::string Error;
-#if HAVE_LLVM >= 0x0306
    EngineBuilder builder(std::unique_ptr<Module>(unwrap(M)));
-#else
-   EngineBuilder builder(unwrap(M));
-#endif
 
    /**
     * LLVM 3.1+ haven't more "extern unsigned llvm::StackAlignmentOverride" and
@@ -424,22 +352,6 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
    TargetOptions options;
 #if defined(PIPE_ARCH_X86)
    options.StackAlignmentOverride = 4;
-#if HAVE_LLVM < 0x0304
-   options.RealignStack = true;
-#endif
-#endif
-
-#if defined(DEBUG)
-   options.JITEmitDebugInfo = true;
-#endif
-
-   /* XXX: Workaround http://llvm.org/PR21435 */
-#if defined(DEBUG) || defined(PROFILE) || \
-    (HAVE_LLVM >= 0x0303 && (defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)))
-#if HAVE_LLVM < 0x0304
-   options.NoFramePointerElimNonLeaf = true;
-#endif
-   options.NoFramePointerElim = true;
 #endif
 
    builder.setEngineKind(EngineKind::JIT)
@@ -447,36 +359,123 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
           .setTargetOptions(options)
           .setOptLevel((CodeGenOpt::Level)OptLevel);
 
-   if (useMCJIT) {
-#if HAVE_LLVM < 0x0306
-       builder.setUseMCJIT(true);
-#endif
 #ifdef _WIN32
-       /*
-        * MCJIT works on Windows, but currently only through ELF object format.
-        */
-       std::string targetTriple = llvm::sys::getProcessTriple();
-       targetTriple.append("-elf");
-       unwrap(M)->setTargetTriple(targetTriple);
+    /*
+     * MCJIT works on Windows, but currently only through ELF object format.
+     *
+     * XXX: We could use `LLVM_HOST_TRIPLE "-elf"` but LLVM_HOST_TRIPLE has
+     * different strings for MinGW/MSVC, so better play it safe and be
+     * explicit.
+     */
+#  ifdef _WIN64
+    LLVMSetTarget(M, "x86_64-pc-win32-elf");
+#  else
+    LLVMSetTarget(M, "i686-pc-win32-elf");
+#  endif
 #endif
-   }
 
-   llvm::SmallVector<std::string, 1> MAttrs;
-   if (util_cpu_caps.has_avx) {
-      /*
-       * AVX feature is not automatically detected from CPUID by the X86 target
-       * yet, because the old (yet default) JIT engine is not capable of
-       * emitting the opcodes. On newer llvm versions it is and at least some
-       * versions (tested with 3.3) will emit avx opcodes without this anyway.
-       */
-      MAttrs.push_back("+avx");
-      if (util_cpu_caps.has_f16c) {
-         MAttrs.push_back("+f16c");
+   llvm::SmallVector<std::string, 16> MAttrs;
+
+#if LLVM_VERSION_MAJOR >= 4 && (defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64) || defined(PIPE_ARCH_ARM))
+   /* llvm-3.3+ implements sys::getHostCPUFeatures for Arm
+    * and llvm-3.7+ for x86, which allows us to enable/disable
+    * code generation based on the results of cpuid on these
+    * architectures.
+    */
+   llvm::StringMap<bool> features;
+   llvm::sys::getHostCPUFeatures(features);
+
+   for (StringMapIterator<bool> f = features.begin();
+        f != features.end();
+        ++f) {
+      MAttrs.push_back(((*f).second ? "+" : "-") + (*f).first().str());
+   }
+#elif defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)
+   /*
+    * We need to unset attributes because sometimes LLVM mistakenly assumes
+    * certain features are present given the processor name.
+    *
+    * https://bugs.freedesktop.org/show_bug.cgi?id=92214
+    * http://llvm.org/PR25021
+    * http://llvm.org/PR19429
+    * http://llvm.org/PR16721
+    */
+   MAttrs.push_back(util_cpu_caps.has_sse    ? "+sse"    : "-sse"   );
+   MAttrs.push_back(util_cpu_caps.has_sse2   ? "+sse2"   : "-sse2"  );
+   MAttrs.push_back(util_cpu_caps.has_sse3   ? "+sse3"   : "-sse3"  );
+   MAttrs.push_back(util_cpu_caps.has_ssse3  ? "+ssse3"  : "-ssse3" );
+   MAttrs.push_back(util_cpu_caps.has_sse4_1 ? "+sse4.1" : "-sse4.1");
+   MAttrs.push_back(util_cpu_caps.has_sse4_2 ? "+sse4.2" : "-sse4.2");
+   /*
+    * AVX feature is not automatically detected from CPUID by the X86 target
+    * yet, because the old (yet default) JIT engine is not capable of
+    * emitting the opcodes. On newer llvm versions it is and at least some
+    * versions (tested with 3.3) will emit avx opcodes without this anyway.
+    */
+   MAttrs.push_back(util_cpu_caps.has_avx  ? "+avx"  : "-avx");
+   MAttrs.push_back(util_cpu_caps.has_f16c ? "+f16c" : "-f16c");
+   MAttrs.push_back(util_cpu_caps.has_fma  ? "+fma"  : "-fma");
+   MAttrs.push_back(util_cpu_caps.has_avx2 ? "+avx2" : "-avx2");
+   /* disable avx512 and all subvariants */
+   MAttrs.push_back("-avx512cd");
+   MAttrs.push_back("-avx512er");
+   MAttrs.push_back("-avx512f");
+   MAttrs.push_back("-avx512pf");
+   MAttrs.push_back("-avx512bw");
+   MAttrs.push_back("-avx512dq");
+   MAttrs.push_back("-avx512vl");
+#endif
+#if defined(PIPE_ARCH_ARM)
+   if (!util_cpu_caps.has_neon) {
+      MAttrs.push_back("-neon");
+      MAttrs.push_back("-crypto");
+      MAttrs.push_back("-vfp2");
+   }
+#endif
+
+#if defined(PIPE_ARCH_PPC)
+   MAttrs.push_back(util_cpu_caps.has_altivec ? "+altivec" : "-altivec");
+#if (LLVM_VERSION_MAJOR < 4)
+   /*
+    * Make sure VSX instructions are disabled
+    * See LLVM bugs:
+    * https://llvm.org/bugs/show_bug.cgi?id=25503#c7 (fixed in 3.8.1)
+    * https://llvm.org/bugs/show_bug.cgi?id=26775 (fixed in 3.8.1)
+    * https://llvm.org/bugs/show_bug.cgi?id=33531 (fixed in 4.0)
+    * https://llvm.org/bugs/show_bug.cgi?id=34647 (llc performance on certain unusual shader IR; intro'd in 4.0, pending as of 5.0)
+    */
+   if (util_cpu_caps.has_altivec) {
+      MAttrs.push_back("-vsx");
+   }
+#else
+   /*
+    * Bug 25503 is fixed, by the same fix that fixed
+    * bug 26775, in versions of LLVM later than 3.8 (starting with 3.8.1).
+    * BZ 33531 actually comprises more than one bug, all of
+    * which are fixed in LLVM 4.0.
+    *
+    * With LLVM 4.0 or higher:
+    * Make sure VSX instructions are ENABLED (if supported), unless
+    * VSX instructions are explicitly enabled/disabled via GALLIVM_VSX=1 or 0.
+    */
+   if (util_cpu_caps.has_altivec) {
+      MAttrs.push_back(util_cpu_caps.has_vsx ? "+vsx" : "-vsx");
+   }
+#endif
+#endif
+
+   builder.setMAttrs(MAttrs);
+
+   if (gallivm_debug & (GALLIVM_DEBUG_IR | GALLIVM_DEBUG_ASM | GALLIVM_DEBUG_DUMP_BC)) {
+      int n = MAttrs.size();
+      if (n > 0) {
+         debug_printf("llc -mattr option(s): ");
+         for (int i = 0; i < n; i++)
+            debug_printf("%s%s", MAttrs[i].c_str(), (i < n - 1) ? "," : "");
+         debug_printf("\n");
       }
-      builder.setMAttrs(MAttrs);
    }
 
-#if HAVE_LLVM >= 0x0305
    StringRef MCPU = llvm::sys::getHostCPUName();
    /*
     * The cpu bits are no longer set automatically, so need to set mcpu manually.
@@ -490,37 +489,60 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
     * when not using MCJIT so no instructions are generated which the old JIT
     * can't handle. Not entirely sure if we really need to do anything yet.
     */
+
+#ifdef PIPE_ARCH_PPC_64
+   /*
+    * Large programs, e.g. gnome-shell and firefox, may tax the addressability
+    * of the Medium code model once dynamically generated JIT-compiled shader
+    * programs are linked in and relocated.  Yet the default code model as of
+    * LLVM 8 is Medium or even Small.
+    * The cost of changing from Medium to Large is negligible:
+    * - an additional 8-byte pointer stored immediately before the shader entrypoint;
+    * - change an add-immediate (addis) instruction to a load (ld).
+    */
+   builder.setCodeModel(CodeModel::Large);
+
+#if UTIL_ARCH_LITTLE_ENDIAN
+   /*
+    * Versions of LLVM prior to 4.0 lacked a table entry for "POWER8NVL",
+    * resulting in (big-endian) "generic" being returned on
+    * little-endian Power8NVL systems.  The result was that code that
+    * attempted to load the least significant 32 bits of a 64-bit quantity
+    * from memory loaded the wrong half.  This resulted in failures in some
+    * Piglit tests, e.g.
+    * .../arb_gpu_shader_fp64/execution/conversion/frag-conversion-explicit-double-uint
+    */
+   if (MCPU == "generic")
+      MCPU = "pwr8";
+#endif
+#endif
    builder.setMCPU(MCPU);
-#endif
-
-   ShaderMemoryManager *MM;
-   if (useMCJIT) {
-#if HAVE_LLVM > 0x0303
-       BaseMemoryManager* JMM = reinterpret_cast<BaseMemoryManager*>(CMM);
-       MM = new ShaderMemoryManager(JMM);
-       *OutCode = MM->getGeneratedCode();
-
-#if HAVE_LLVM >= 0x0306
-       builder.setMCJITMemoryManager(std::unique_ptr<RTDyldMemoryManager>(MM));
-#else
-       builder.setMCJITMemoryManager(MM);
-#endif
-#endif
-   } else {
-#if HAVE_LLVM < 0x0306
-       BaseMemoryManager* JMM = reinterpret_cast<BaseMemoryManager*>(CMM);
-       MM = new ShaderMemoryManager(JMM);
-       *OutCode = MM->getGeneratedCode();
-
-       builder.setJITMemoryManager(MM);
-#else
-       assert(0);
-#endif
+   if (gallivm_debug & (GALLIVM_DEBUG_IR | GALLIVM_DEBUG_ASM | GALLIVM_DEBUG_DUMP_BC)) {
+      debug_printf("llc -mcpu option: %s\n", MCPU.str().c_str());
    }
+
+   ShaderMemoryManager *MM = NULL;
+   BaseMemoryManager* JMM = reinterpret_cast<BaseMemoryManager*>(CMM);
+   MM = new ShaderMemoryManager(JMM);
+   *OutCode = MM->getGeneratedCode();
+
+   builder.setMCJITMemoryManager(std::unique_ptr<RTDyldMemoryManager>(MM));
+   MM = NULL; // ownership taken by std::unique_ptr
 
    ExecutionEngine *JIT;
 
    JIT = builder.create();
+
+   if (cache_out) {
+      LPObjectCache *objcache = new LPObjectCache(cache_out);
+      JIT->setObjectCache(objcache);
+      cache_out->jit_obj_cache = (void *)objcache;
+   }
+
+#if LLVM_USE_INTEL_JITEVENTS
+   JITEventListener *JEL = JITEventListener::createIntelJITEventListener();
+   JIT->RegisterJITEventListener(JEL);
+#endif
    if (JIT) {
       *OutJIT = wrap(JIT);
       return 0;
@@ -545,11 +567,7 @@ LLVMMCJITMemoryManagerRef
 lp_get_default_memory_manager()
 {
    BaseMemoryManager *mm;
-#if HAVE_LLVM < 0x0306
-   mm = llvm::JITMemoryManager::CreateDefaultMemManager();
-#else
    mm = new llvm::SectionMemoryManager();
-#endif
    return reinterpret_cast<LLVMMCJITMemoryManagerRef>(mm);
 }
 
@@ -558,4 +576,23 @@ void
 lp_free_memory_manager(LLVMMCJITMemoryManagerRef memorymgr)
 {
    delete reinterpret_cast<BaseMemoryManager*>(memorymgr);
+}
+
+extern "C" void
+lp_free_objcache(void *objcache_ptr)
+{
+   LPObjectCache *objcache = (LPObjectCache *)objcache_ptr;
+   delete objcache;
+}
+
+extern "C" LLVMValueRef
+lp_get_called_value(LLVMValueRef call)
+{
+	return LLVMGetCalledValue(call);
+}
+
+extern "C" bool
+lp_is_function(LLVMValueRef v)
+{
+	return LLVMGetValueKind(v) == LLVMFunctionValueKind;
 }

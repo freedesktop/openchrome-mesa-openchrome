@@ -72,6 +72,7 @@ struct cmd_bin;
 
 struct lp_rasterizer_task;
 
+extern const float lp_sample_pos_4x[4][2];
 
 /**
  * Rasterization state.
@@ -115,7 +116,13 @@ struct lp_rast_plane {
    int32_t dcdy;
 
    /* one-pixel sized trivial reject offsets for each plane */
-   int64_t eo;
+   uint32_t eo;
+   /*
+    * We rely on this struct being 64bit aligned (ideally it would be 128bit
+    * but that's quite the waste) and therefore on 32bit we need padding
+    * since otherwise (even with the 64bit number in there) it wouldn't be.
+    */
+   uint32_t pad;
 };
 
 /**
@@ -184,7 +191,7 @@ union lp_rast_cmd_arg {
 
 /* Cast wrappers.  Hopefully these compile to noops!
  */
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_inputs( const struct lp_rast_shader_inputs *shade_tile )
 {
    union lp_rast_cmd_arg arg;
@@ -192,7 +199,7 @@ lp_rast_arg_inputs( const struct lp_rast_shader_inputs *shade_tile )
    return arg;
 }
 
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_triangle( const struct lp_rast_triangle *triangle,
                       unsigned plane_mask)
 {
@@ -208,7 +215,7 @@ lp_rast_arg_triangle( const struct lp_rast_triangle *triangle,
  * All planes are enabled, so instead of the plane mask we pass the upper
  * left coordinates of the a block that fully encloses the triangle.
  */
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_triangle_contained( const struct lp_rast_triangle *triangle,
                                 unsigned x, unsigned y)
 {
@@ -218,7 +225,7 @@ lp_rast_arg_triangle_contained( const struct lp_rast_triangle *triangle,
    return arg;
 }
 
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_state( const struct lp_rast_state *state )
 {
    union lp_rast_cmd_arg arg;
@@ -226,7 +233,7 @@ lp_rast_arg_state( const struct lp_rast_state *state )
    return arg;
 }
 
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_fence( struct lp_fence *fence )
 {
    union lp_rast_cmd_arg arg;
@@ -235,7 +242,7 @@ lp_rast_arg_fence( struct lp_fence *fence )
 }
 
 
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_clearzs( uint64_t value, uint64_t mask )
 {
    union lp_rast_cmd_arg arg;
@@ -245,7 +252,7 @@ lp_rast_arg_clearzs( uint64_t value, uint64_t mask )
 }
 
 
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_query( struct llvmpipe_query *pq )
 {
    union lp_rast_cmd_arg arg;
@@ -253,7 +260,7 @@ lp_rast_arg_query( struct llvmpipe_query *pq )
    return arg;
 }
 
-static INLINE union lp_rast_cmd_arg
+static inline union lp_rast_cmd_arg
 lp_rast_arg_null( void )
 {
    union lp_rast_cmd_arg arg;
@@ -297,7 +304,18 @@ lp_rast_arg_null( void )
 #define LP_RAST_OP_TRIANGLE_32_3_16  0x1b
 #define LP_RAST_OP_TRIANGLE_32_4_16  0x1c
 
-#define LP_RAST_OP_MAX               0x1d
+#define LP_RAST_OP_MS_TRIANGLE_1     0x1d
+#define LP_RAST_OP_MS_TRIANGLE_2     0x1e
+#define LP_RAST_OP_MS_TRIANGLE_3     0x1f
+#define LP_RAST_OP_MS_TRIANGLE_4     0x20
+#define LP_RAST_OP_MS_TRIANGLE_5     0x21
+#define LP_RAST_OP_MS_TRIANGLE_6     0x22
+#define LP_RAST_OP_MS_TRIANGLE_7     0x23
+#define LP_RAST_OP_MS_TRIANGLE_8     0x24
+#define LP_RAST_OP_MS_TRIANGLE_3_4   0x25
+#define LP_RAST_OP_MS_TRIANGLE_3_16  0x26
+#define LP_RAST_OP_MS_TRIANGLE_4_16  0x27
+#define LP_RAST_OP_MAX               0x28
 #define LP_RAST_OP_MASK              0xff
 
 void
@@ -307,18 +325,5 @@ lp_debug_draw_bins_by_cmd_length( struct lp_scene *scene );
 void
 lp_debug_draw_bins_by_coverage( struct lp_scene *scene );
 
-
-#ifdef PIPE_ARCH_SSE
-#include <emmintrin.h>
-#include "util/u_sse.h"
-
-static INLINE __m128i
-lp_plane_to_m128i(const struct lp_rast_plane *plane)
-{
-   return _mm_setr_epi32((int32_t)plane->c, (int32_t)plane->dcdx,
-                         (int32_t)plane->dcdy, (int32_t)plane->eo);
-}
-
-#endif
 
 #endif

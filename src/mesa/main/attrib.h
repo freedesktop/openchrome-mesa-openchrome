@@ -26,7 +26,6 @@
 #define ATTRIB_H
 
 
-#include "compiler.h"
 #include "glheader.h"
 
 struct _glapi_table;
@@ -43,6 +42,12 @@ _mesa_PushClientAttrib( GLbitfield mask );
 
 extern void GLAPIENTRY
 _mesa_PopClientAttrib( void );
+
+extern void GLAPIENTRY
+_mesa_ClientAttribDefaultEXT( GLbitfield mask );
+
+extern void GLAPIENTRY
+_mesa_PushClientAttribDefaultEXT( GLbitfield mask );
 
 extern void 
 _mesa_init_attrib( struct gl_context *ctx );

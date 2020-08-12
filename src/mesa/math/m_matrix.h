@@ -110,6 +110,12 @@ extern void
 _math_matrix_scale( GLmatrix *mat, GLfloat x, GLfloat y, GLfloat z );
 
 extern void
+_math_float_ortho(float *m,
+                  float left, float right,
+                  float bottom, float top,
+                  float nearval, float farval);
+
+extern void
 _math_matrix_ortho( GLmatrix *mat,
 		    GLfloat left, GLfloat right,
 		    GLfloat bottom, GLfloat top,
@@ -122,8 +128,8 @@ _math_matrix_frustum( GLmatrix *mat,
 		      GLfloat nearval, GLfloat farval );
 
 extern void
-_math_matrix_viewport( GLmatrix *m, const double scale[3],
-                       const double translate[3], double depthMax );
+_math_matrix_viewport( GLmatrix *m, const float scale[3],
+                       const float translate[3], double depthMax );
 
 extern void
 _math_matrix_set_identity( GLmatrix *dest );

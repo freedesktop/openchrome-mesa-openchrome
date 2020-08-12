@@ -27,7 +27,7 @@
  *      Pauli Nieminen <suokkos@gmail.com>
  */
 
-#include "utils.h"
+#include "util/debug.h"
 
 #include "radeon_common_context.h"
 #include "radeon_debug.h"
@@ -35,7 +35,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-static const struct dri_debug_control debug_control[] = {
+static const struct debug_control debug_control[] = {
 	{"fall", RADEON_FALLBACKS},
 	{"tex", RADEON_TEXTURE},
 	{"ioctl", RADEON_IOCTL},
@@ -57,13 +57,17 @@ static const struct dri_debug_control debug_control[] = {
 	{NULL, 0}
 };
 
-radeon_debug_type_t radeon_enabled_debug_types;
+#if defined(RADEON_R200)
+radeon_debug_type_t r200_enabled_debug_types;
+#elif defined(RADEON_R100)
+radeon_debug_type_t r100_enabled_debug_types;
+#endif
 
 void radeon_init_debug(void)
 {
-	radeon_enabled_debug_types = driParseDebugString(getenv("RADEON_DEBUG"), debug_control);
+	RADEON_DEBUG = parse_debug_string(getenv("RADEON_DEBUG"), debug_control);
 
-	radeon_enabled_debug_types |= RADEON_GENERAL;
+	RADEON_DEBUG |= RADEON_GENERAL;
 }
 
 void _radeon_debug_add_indent(void)
@@ -75,7 +79,7 @@ void _radeon_debug_add_indent(void)
 	if (radeon->debug.indent_depth < length - 1) {
 		radeon->debug.indent[radeon->debug.indent_depth] = '\t';
 		++radeon->debug.indent_depth;
-	};
+	}
 }
 
 void _radeon_debug_remove_indent(void)

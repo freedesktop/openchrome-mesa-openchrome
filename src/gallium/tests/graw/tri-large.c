@@ -59,7 +59,7 @@ static void set_vertices( void )
 
    vbuf.stride = sizeof( struct vertex );
    vbuf.buffer_offset = 0;
-   vbuf.buffer = pipe_buffer_create_with_data(info.ctx,
+   vbuf.buffer.resource = pipe_buffer_create_with_data(info.ctx,
                                               PIPE_BIND_VERTEX_BUFFER,
                                               PIPE_USAGE_DEFAULT,
                                               sizeof(vertices),
@@ -106,7 +106,7 @@ static void draw( void )
 {
    union pipe_color_union clear_color = { {1,0,1,1} };
 
-   info.ctx->clear(info.ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
+   info.ctx->clear(info.ctx, PIPE_CLEAR_COLOR, NULL, &clear_color, 0, 0);
    util_draw_arrays(info.ctx, PIPE_PRIM_TRIANGLES, 0, 3);
    info.ctx->flush(info.ctx, NULL, 0);
 
@@ -131,7 +131,8 @@ static void init( void )
       rasterizer.half_pixel_center = 1;
       rasterizer.bottom_edge_rule = 1;
       rasterizer.flatshade = FlatShade;
-      rasterizer.depth_clip = 1;
+      rasterizer.depth_clip_near = 1;
+      rasterizer.depth_clip_far = 1;
       handle = info.ctx->create_rasterizer_state(info.ctx, &rasterizer);
       info.ctx->bind_rasterizer_state(info.ctx, handle);
    }

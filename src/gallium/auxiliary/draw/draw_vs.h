@@ -113,8 +113,7 @@ struct draw_vertex_shader {
    unsigned viewport_index_output;
    unsigned edgeflag_output;
    unsigned clipvertex_output;
-   unsigned clipdistance_output[PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT];
-   unsigned culldistance_output[PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT];
+   unsigned ccdistance_output[PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT];
    /* Extracted from shader:
     */
    const float (*immediates)[4];
@@ -141,7 +140,8 @@ struct draw_vertex_shader {
                        const unsigned const_size[PIPE_MAX_CONSTANT_BUFFERS],
 		       unsigned count,
 		       unsigned input_stride,
-		       unsigned output_stride );
+		       unsigned output_stride,
+		       const unsigned *fetch_elts);
 
 
    void (*delete)( struct draw_vertex_shader * );
@@ -164,7 +164,7 @@ draw_create_vs_exec(struct draw_context *draw,
 struct draw_vs_variant_key;
 struct draw_vertex_shader;
 
-#if HAVE_LLVM
+#ifdef LLVM_AVAILABLE
 struct draw_vertex_shader *
 draw_create_vs_llvm(struct draw_context *draw,
 		    const struct pipe_shader_state *state);
@@ -191,12 +191,12 @@ draw_vs_create_variant_generic( struct draw_vertex_shader *vs,
 
 
 
-static INLINE int draw_vs_variant_keysize( const struct draw_vs_variant_key *key )
+static inline int draw_vs_variant_keysize( const struct draw_vs_variant_key *key )
 {
    return 2 * sizeof(int) + key->nr_elements * sizeof(struct draw_variant_element);
 }
 
-static INLINE int draw_vs_variant_key_compare( const struct draw_vs_variant_key *a,
+static inline int draw_vs_variant_key_compare( const struct draw_vs_variant_key *a,
                                          const struct draw_vs_variant_key *b )
 {
    int keysize = draw_vs_variant_keysize(a);

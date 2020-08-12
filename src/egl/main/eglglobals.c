@@ -29,43 +29,76 @@
 
 
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <assert.h>
+#include "c11/threads.h"
+
 #include "eglglobals.h"
+#include "egldevice.h"
 #include "egldisplay.h"
 #include "egldriver.h"
-#include "eglmutex.h"
+
+#include "util/macros.h"
+
+#ifdef HAVE_MINCORE
+#include <unistd.h>
+#include <sys/mman.h>
+#endif
 
 
-static _EGLMutex _eglGlobalMutex = _EGL_MUTEX_INITIALIZER;
+static mtx_t _eglGlobalMutex = _MTX_INITIALIZER_NP;
 
 struct _egl_global _eglGlobal =
 {
-   &_eglGlobalMutex,       /* Mutex */
-   NULL,                   /* DisplayList */
-   2,                      /* NumAtExitCalls */
-   {
+   .Mutex = &_eglGlobalMutex,
+   .DisplayList = NULL,
+   .DeviceList = &_eglSoftwareDevice,
+   .NumAtExitCalls = 2,
+   .AtExitCalls = {
       /* default AtExitCalls, called in reverse order */
-      _eglUnloadDrivers, /* always called last */
-      _eglFiniDisplay
+      _eglFiniDevice, /* always called last */
+      _eglFiniDisplay,
    },
 
-   /* ClientExtensions */
-   {
-      true, /* EGL_EXT_client_extensions */
-      true, /* EGL_EXT_platform_base */
-      true, /* EGL_EXT_platform_x11 */
-      true, /* EGL_EXT_platform_wayland */
-      true, /* EGL_MESA_platform_gbm */
-      true, /* EGL_KHR_client_get_all_proc_addresses */
-   },
-
-   /* ClientExtensionsString */
+#if USE_LIBGLVND
+   .ClientOnlyExtensionString =
+#else
+   .ClientExtensionString =
+#endif
    "EGL_EXT_client_extensions"
+   " EGL_EXT_device_base"
+   " EGL_EXT_device_enumeration"
+   " EGL_EXT_device_query"
    " EGL_EXT_platform_base"
-   " EGL_EXT_platform_x11"
-   " EGL_EXT_platform_wayland"
-   " EGL_MESA_platform_gbm"
    " EGL_KHR_client_get_all_proc_addresses"
+   " EGL_KHR_debug"
+
+#if USE_LIBGLVND
+   ,
+   .PlatformExtensionString =
+#else
+   " "
+#endif
+
+   "EGL_EXT_platform_device"
+#ifdef HAVE_WAYLAND_PLATFORM
+   " EGL_EXT_platform_wayland"
+   " EGL_KHR_platform_wayland"
+#endif
+#ifdef HAVE_X11_PLATFORM
+   " EGL_EXT_platform_x11"
+   " EGL_KHR_platform_x11"
+#endif
+#ifdef HAVE_DRM_PLATFORM
+   " EGL_MESA_platform_gbm"
+   " EGL_KHR_platform_gbm"
+#endif
+   " EGL_MESA_platform_surfaceless"
+   "",
+
+   .debugCallback = NULL,
+   .debugTypesEnabled = _EGL_DEBUG_BIT_CRITICAL | _EGL_DEBUG_BIT_ERROR,
 };
 
 
@@ -84,7 +117,7 @@ _eglAddAtExitCall(void (*func)(void))
    if (func) {
       static EGLBoolean registered = EGL_FALSE;
 
-      _eglLockMutex(_eglGlobal.Mutex);
+      mtx_lock(_eglGlobal.Mutex);
 
       if (!registered) {
          atexit(_eglAtExit);
@@ -94,6 +127,42 @@ _eglAddAtExitCall(void (*func)(void))
       assert(_eglGlobal.NumAtExitCalls < ARRAY_SIZE(_eglGlobal.AtExitCalls));
       _eglGlobal.AtExitCalls[_eglGlobal.NumAtExitCalls++] = func;
 
-      _eglUnlockMutex(_eglGlobal.Mutex);
+      mtx_unlock(_eglGlobal.Mutex);
    }
+}
+
+EGLBoolean
+_eglPointerIsDereferencable(void *p)
+{
+   uintptr_t addr = (uintptr_t) p;
+   const long page_size = getpagesize();
+#ifdef HAVE_MINCORE
+   unsigned char valid = 0;
+
+   if (p == NULL)
+      return EGL_FALSE;
+
+   /* align addr to page_size */
+   addr &= ~(page_size - 1);
+
+   if (mincore((void *) addr, page_size, &valid) < 0) {
+      return EGL_FALSE;
+   }
+
+   /* mincore() returns 0 on success, and -1 on failure.  The last parameter
+    * is a vector of bytes with one entry for each page queried.  mincore
+    * returns page residency information in the first bit of each byte in the
+    * vector.
+    *
+    * Residency doesn't actually matter when determining whether a pointer is
+    * dereferenceable, so the output vector can be ignored.  What matters is
+    * whether mincore succeeds. See:
+    *
+    *   http://man7.org/linux/man-pages/man2/mincore.2.html
+    */
+   return EGL_TRUE;
+#else
+   // Without mincore(), we just assume that the first page is unmapped.
+   return addr >= page_size;
+#endif
 }

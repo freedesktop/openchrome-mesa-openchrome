@@ -27,11 +27,11 @@
 
 
 #include "main/context.h"
+#include "main/debug_output.h"
 #include "program/prog_print.h"
 
 #include "pipe/p_state.h"
 #include "pipe/p_shader_tokens.h"
-#include "tgsi/tgsi_dump.h"
 
 #include "cso_cache/cso_cache.h"
 
@@ -41,12 +41,12 @@
 
 
 
-#ifdef DEBUG
 int ST_DEBUG = 0;
 
 static const struct debug_named_value st_debug_flags[] = {
    { "mesa",     DEBUG_MESA, NULL },
-   { "tgsi",     DEBUG_TGSI, NULL },
+   { "tgsi",     DEBUG_PRINT_IR, NULL },
+   { "nir",      DEBUG_PRINT_IR, NULL },
    { "constants",DEBUG_CONSTANTS, NULL },
    { "pipe",     DEBUG_PIPE, NULL },
    { "tex",      DEBUG_TEX, NULL },
@@ -56,50 +56,95 @@ static const struct debug_named_value st_debug_flags[] = {
    { "draw",     DEBUG_DRAW, NULL },
    { "buffer",   DEBUG_BUFFER, NULL },
    { "wf",       DEBUG_WIREFRAME, NULL },
+   { "precompile",  DEBUG_PRECOMPILE, NULL },
+   { "gremedy",  DEBUG_GREMEDY, "Enable GREMEDY debug extensions" },
+   { "noreadpixcache", DEBUG_NOREADPIXCACHE, NULL },
    DEBUG_NAMED_VALUE_END
 };
 
 DEBUG_GET_ONCE_FLAGS_OPTION(st_debug, "ST_DEBUG", st_debug_flags, 0)
-#endif
 
 
 void
 st_debug_init(void)
 {
-#ifdef DEBUG
    ST_DEBUG = debug_get_option_st_debug();
-#endif
 }
-
 
 
 /**
- * Print current state.  May be called from inside gdb to see currently
- * bound vertex/fragment shaders and associated constants.
+ * Installed as pipe_debug_callback when GL_DEBUG_OUTPUT is enabled.
  */
-void
-st_print_current(void)
+static void
+st_debug_message(void *data,
+                 unsigned *id,
+                 enum pipe_debug_type ptype,
+                 const char *fmt,
+                 va_list args)
 {
-   GET_CURRENT_CONTEXT(ctx);
-   struct st_context *st = st_context(ctx);
+   struct st_context *st = data;
+   enum mesa_debug_source source;
+   enum mesa_debug_type type;
+   enum mesa_debug_severity severity;
 
-#if 0
-   int i;
-
-   printf("Vertex Transform Inputs:\n");
-   for (i = 0; i < st->vp->state.num_inputs; i++) {
-      printf("  Slot %d:  VERT_ATTRIB_%d\n", i, st->vp->index_to_input[i]);
+   switch (ptype) {
+   case PIPE_DEBUG_TYPE_OUT_OF_MEMORY:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_ERROR;
+      severity = MESA_DEBUG_SEVERITY_MEDIUM;
+      break;
+   case PIPE_DEBUG_TYPE_ERROR:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_ERROR;
+      severity = MESA_DEBUG_SEVERITY_MEDIUM;
+      break;
+   case PIPE_DEBUG_TYPE_SHADER_INFO:
+      source = MESA_DEBUG_SOURCE_SHADER_COMPILER;
+      type = MESA_DEBUG_TYPE_OTHER;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_PERF_INFO:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_PERFORMANCE;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_INFO:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_OTHER;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_FALLBACK:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_PERFORMANCE;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   case PIPE_DEBUG_TYPE_CONFORMANCE:
+      source = MESA_DEBUG_SOURCE_API;
+      type = MESA_DEBUG_TYPE_OTHER;
+      severity = MESA_DEBUG_SEVERITY_NOTIFICATION;
+      break;
+   default:
+      unreachable("invalid debug type");
    }
-#endif
-
-   if (st->vp->variants)
-      tgsi_dump( st->vp->variants[0].tgsi.tokens, 0 );
-   if (st->vp->Base.Base.Parameters)
-      _mesa_print_parameter_list(st->vp->Base.Base.Parameters);
-
-   tgsi_dump( st->fp->variants[0].tgsi.tokens, 0 );
-   if (st->fp->Base.Base.Parameters)
-      _mesa_print_parameter_list(st->fp->Base.Base.Parameters);
+   _mesa_gl_vdebugf(st->ctx, id, source, type, severity, fmt, args);
 }
 
+void
+st_update_debug_callback(struct st_context *st)
+{
+   struct pipe_context *pipe = st->pipe;
 
+   if (!pipe->set_debug_callback)
+      return;
+
+   if (_mesa_get_debug_state_int(st->ctx, GL_DEBUG_OUTPUT)) {
+      struct pipe_debug_callback cb;
+      memset(&cb, 0, sizeof(cb));
+      cb.async = !_mesa_get_debug_state_int(st->ctx, GL_DEBUG_OUTPUT_SYNCHRONOUS);
+      cb.debug_message = st_debug_message;
+      cb.data = st;
+      pipe->set_debug_callback(pipe, &cb);
+   } else {
+      pipe->set_debug_callback(pipe, NULL);
+   }
+}

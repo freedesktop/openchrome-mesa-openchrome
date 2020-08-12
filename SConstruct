@@ -1,7 +1,7 @@
 #######################################################################
 # Top-level SConstruct
 #
-# For example, invoke scons as 
+# For example, invoke scons as
 #
 #   scons build=debug llvm=yes machine=x86
 #
@@ -12,20 +12,28 @@
 #   build='debug'
 #   llvm=True
 #   machine='x86'
-# 
+#
 # Invoke
 #
 #   scons -h
 #
 # to get the full list of options. See scons manpage for more info.
-#  
+#
 
+from __future__ import print_function
 import os
 import os.path
 import sys
 import SCons.Util
 
 import common
+
+#######################################################################
+# Minimal scons version
+
+EnsureSConsVersion(2, 4)
+EnsurePythonVersion(2, 7)
+
 
 #######################################################################
 # Configuration options
@@ -36,7 +44,7 @@ common.AddOptions(opts)
 env = Environment(
 	options = opts,
 	tools = ['gallium'],
-	toolpath = ['#scons'],	
+	toolpath = ['#scons'],
 	ENV = os.environ,
 )
 
@@ -50,14 +58,34 @@ except KeyError:
     pass
 else:
     targets = targets.split(',')
-    print 'scons: warning: targets option is deprecated; pass the targets on their own such as'
-    print
-    print '  scons %s' % ' '.join(targets)
-    print 
+    print('scons: warning: targets option is deprecated; pass the targets on their own such as')
+    print()
+    print('  scons %s' % ' '.join(targets))
+    print()
     COMMAND_LINE_TARGETS.append(targets)
 
 
 Help(opts.GenerateHelpText(env))
+
+
+#######################################################################
+# Print a deprecation warning for using scons on non-windows
+
+if common.host_platform != 'windows' and env['platform'] != 'windows':
+    if env['force_scons']:
+        print("WARNING: Scons is deprecated for non-windows platforms (including cygwin) "
+              "please use meson instead.", file=sys.stderr)
+    else:
+        print("ERROR: Scons is deprecated for non-windows platforms (including cygwin) "
+              "please use meson instead. If you really need to use scons you "
+              "can add `force_scons=1` to the scons command line.", file=sys.stderr)
+        sys.exit(1)
+else:
+    print("WARNING: Scons support is in the process of being deprecated on "
+          "on windows platforms (including mingw). If you haven't already "
+          "please try using meson for windows builds. Be sure to report any "
+          "issues you run into", file=sys.stderr)
+
 
 #######################################################################
 # Environment setup
@@ -66,7 +94,7 @@ with open("VERSION") as f:
   mesa_version = f.read().strip()
 env.Append(CPPDEFINES = [
     ('PACKAGE_VERSION', '\\"%s\\"' % mesa_version),
-    ('PACKAGE_BUGREPORT', '\\"https://bugs.freedesktop.org/enter_bug.cgi?product=Mesa\\"'),
+    ('PACKAGE_BUGREPORT', '\\"https://gitlab.freedesktop.org/mesa/mesa/-/issues\\"'),
 ])
 
 # Includes
@@ -84,9 +112,14 @@ env.Append(CPPPATH = [
 #print env.Dump()
 
 
+# Add a check target for running tests
+check = env.Alias('check')
+env.AlwaysBuild(check)
+
+
 #######################################################################
-# Invoke host SConscripts 
-# 
+# Invoke host SConscripts
+#
 # For things that are meant to be run on the native host build machine, instead
 # of the target machine.
 #
@@ -147,8 +180,7 @@ try:
 except ImportError:
     pass
 else:
-    aliases = default_ans.keys()
-    aliases.sort()
+    aliases = sorted(default_ans.keys())
     env.Help('\n')
     env.Help('Recognized targets:\n')
     for alias in aliases:

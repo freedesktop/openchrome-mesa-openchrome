@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
  *
@@ -40,9 +38,11 @@
 struct fd4_sampler_stateobj {
 	struct pipe_sampler_state base;
 	uint32_t texsamp0, texsamp1;
+	bool saturate_s, saturate_t, saturate_r;
+	bool needs_border;
 };
 
-static INLINE struct fd4_sampler_stateobj *
+static inline struct fd4_sampler_stateobj *
 fd4_sampler_stateobj(struct pipe_sampler_state *samp)
 {
 	return (struct fd4_sampler_stateobj *)samp;
@@ -50,11 +50,12 @@ fd4_sampler_stateobj(struct pipe_sampler_state *samp)
 
 struct fd4_pipe_sampler_view {
 	struct pipe_sampler_view base;
-	struct fd_resource *tex_resource;
-	uint32_t texconst0, texconst1, texconst2, texconst3, textconst4;
+	uint32_t texconst0, texconst1, texconst2, texconst3, texconst4;
+	uint32_t offset;
+	bool astc_srgb;
 };
 
-static INLINE struct fd4_pipe_sampler_view *
+static inline struct fd4_pipe_sampler_view *
 fd4_pipe_sampler_view(struct pipe_sampler_view *pview)
 {
 	return (struct fd4_pipe_sampler_view *)pview;

@@ -28,13 +28,13 @@
 #include "glheader.h"
 #include "api_arrayelt.h"
 #include "context.h"
-#include "imports.h"
+
 #include "mtypes.h"
 #include "vtxfmt.h"
 #include "eval.h"
 #include "dlist.h"
 #include "main/dispatch.h"
-#include "vbo/vbo_context.h"
+#include "vbo/vbo.h"
 
 
 /**
@@ -111,7 +111,7 @@ install_vtxfmt(struct gl_context *ctx, struct _glapi_table *tab,
       SET_PrimitiveRestartNV(tab, vfmt->PrimitiveRestartNV);
    }
 
-   /* Originally for GL_NV_vertex_program, this is also used by dlist.c */
+   /* Originally for GL_NV_vertex_program, this is now only used by dlist.c */
    if (ctx->API == API_OPENGL_COMPAT) {
       SET_VertexAttrib1fNV(tab, vfmt->VertexAttrib1fNV);
       SET_VertexAttrib1fvNV(tab, vfmt->VertexAttrib1fvNV);
@@ -193,6 +193,40 @@ install_vtxfmt(struct gl_context *ctx, struct _glapi_table *tab,
 
       SET_SecondaryColorP3ui(tab, vfmt->SecondaryColorP3ui);
       SET_SecondaryColorP3uiv(tab, vfmt->SecondaryColorP3uiv);
+
+      /* GL_NV_half_float */
+      SET_Vertex2hNV(tab, vfmt->Vertex2hNV);
+      SET_Vertex2hvNV(tab, vfmt->Vertex2hvNV);
+      SET_Vertex3hNV(tab, vfmt->Vertex3hNV);
+      SET_Vertex3hvNV(tab, vfmt->Vertex3hvNV);
+      SET_Vertex4hNV(tab, vfmt->Vertex4hNV);
+      SET_Vertex4hvNV(tab, vfmt->Vertex4hvNV);
+      SET_Normal3hNV(tab, vfmt->Normal3hNV);
+      SET_Normal3hvNV(tab, vfmt->Normal3hvNV);
+      SET_Color3hNV(tab, vfmt->Color3hNV);
+      SET_Color3hvNV(tab, vfmt->Color4hvNV);
+      SET_Color4hNV(tab, vfmt->Color4hNV);
+      SET_Color4hvNV(tab, vfmt->Color3hvNV);
+      SET_TexCoord1hNV(tab, vfmt->TexCoord1hNV);
+      SET_TexCoord1hvNV(tab, vfmt->TexCoord1hvNV);
+      SET_TexCoord2hNV(tab, vfmt->TexCoord2hNV);
+      SET_TexCoord2hvNV(tab, vfmt->TexCoord2hvNV);
+      SET_TexCoord3hNV(tab, vfmt->TexCoord3hNV);
+      SET_TexCoord3hvNV(tab, vfmt->TexCoord3hvNV);
+      SET_TexCoord4hNV(tab, vfmt->TexCoord4hNV);
+      SET_TexCoord4hvNV(tab, vfmt->TexCoord4hvNV);
+      SET_MultiTexCoord1hNV(tab, vfmt->MultiTexCoord1hNV);
+      SET_MultiTexCoord1hvNV(tab, vfmt->MultiTexCoord1hvNV);
+      SET_MultiTexCoord2hNV(tab, vfmt->MultiTexCoord2hNV);
+      SET_MultiTexCoord2hvNV(tab, vfmt->MultiTexCoord2hvNV);
+      SET_MultiTexCoord3hNV(tab, vfmt->MultiTexCoord3hNV);
+      SET_MultiTexCoord3hvNV(tab, vfmt->MultiTexCoord3hvNV);
+      SET_MultiTexCoord4hNV(tab, vfmt->MultiTexCoord4hNV);
+      SET_MultiTexCoord4hvNV(tab, vfmt->MultiTexCoord4hvNV);
+      SET_FogCoordhNV(tab, vfmt->FogCoordhNV);
+      SET_FogCoordhvNV(tab, vfmt->FogCoordhvNV);
+      SET_SecondaryColor3hNV(tab, vfmt->SecondaryColor3hNV);
+      SET_SecondaryColor3hvNV(tab, vfmt->SecondaryColor3hvNV);
    }
 
    if (_mesa_is_desktop_gl(ctx)) {
@@ -205,6 +239,23 @@ install_vtxfmt(struct gl_context *ctx, struct _glapi_table *tab,
       SET_VertexAttribP2uiv(tab, vfmt->VertexAttribP2uiv);
       SET_VertexAttribP3uiv(tab, vfmt->VertexAttribP3uiv);
       SET_VertexAttribP4uiv(tab, vfmt->VertexAttribP4uiv);
+
+      /* GL_ARB_bindless_texture */
+      SET_VertexAttribL1ui64ARB(tab, vfmt->VertexAttribL1ui64ARB);
+      SET_VertexAttribL1ui64vARB(tab, vfmt->VertexAttribL1ui64vARB);
+   }
+
+   if (_mesa_is_desktop_gl(ctx)) {
+      /* GL_ARB_vertex_attrib_64bit */
+      SET_VertexAttribL1d(tab, vfmt->VertexAttribL1d);
+      SET_VertexAttribL2d(tab, vfmt->VertexAttribL2d);
+      SET_VertexAttribL3d(tab, vfmt->VertexAttribL3d);
+      SET_VertexAttribL4d(tab, vfmt->VertexAttribL4d);
+
+      SET_VertexAttribL1dv(tab, vfmt->VertexAttribL1dv);
+      SET_VertexAttribL2dv(tab, vfmt->VertexAttribL2dv);
+      SET_VertexAttribL3dv(tab, vfmt->VertexAttribL3dv);
+      SET_VertexAttribL4dv(tab, vfmt->VertexAttribL4dv);
    }
 }
 
@@ -241,8 +292,7 @@ _mesa_install_save_vtxfmt(struct gl_context *ctx, const GLvertexformat *vfmt)
 void
 _mesa_initialize_vbo_vtxfmt(struct gl_context *ctx)
 {
-   struct vbo_exec_context *exec = &vbo_context(ctx)->exec;
-   _mesa_install_exec_vtxfmt(ctx, &exec->vtxfmt);
+   _vbo_install_exec_vtxfmt(ctx);
    if (ctx->API == API_OPENGL_COMPAT) {
       _mesa_install_save_vtxfmt(ctx, &ctx->ListState.ListVtxfmt);
    }

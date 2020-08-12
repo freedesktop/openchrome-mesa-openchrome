@@ -31,72 +31,45 @@ include $(LOCAL_PATH)/Makefile.sources
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
-	$(MESA_UTIL_FILES)
+	$(MESA_UTIL_FILES) \
+	$(XMLCONFIG_FILES)
 
 LOCAL_C_INCLUDES := \
+	external/zlib \
 	$(MESA_TOP)/src/mesa \
 	$(MESA_TOP)/src/mapi \
-	$(MESA_TOP)/src
+	$(MESA_TOP)/src/gallium/include \
+	$(MESA_TOP)/src/gallium/auxiliary \
+	$(MESA_TOP)/src/util/format
+
+# If Android version >=8 MESA should static link libexpat else should dynamic link
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 27; echo $$?), 0)
+LOCAL_STATIC_LIBRARIES := \
+	libexpat
+else
+LOCAL_SHARED_LIBRARIES := \
+	libexpat
+endif
+
+LOCAL_SHARED_LIBRARIES += liblog
 
 LOCAL_MODULE := libmesa_util
 
 # Generated sources
 
-ifeq ($(LOCAL_MODULE_CLASS),)
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-endif
 
-intermediates := $(call local-intermediates-dir)
+intermediates := $(call local-generated-sources-dir)
 
-# This is the list of auto-generated files: sources and headers
-sources := $(addprefix $(intermediates)/, $(MESA_UTIL_GENERATED_FILES))
+LOCAL_EXPORT_C_INCLUDE_DIRS := $(intermediates)
 
-LOCAL_GENERATED_SOURCES += $(sources)
+UTIL_GENERATED_SOURCES := $(addprefix $(intermediates)/,$(MESA_UTIL_GENERATED_FILES))
+LOCAL_GENERATED_SOURCES := $(UTIL_GENERATED_SOURCES)
 
-FORMAT_SRGB := $(LOCAL_PATH)/format_srgb.py
-
-$(intermediates)/format_srgb.c: $(FORMAT_SRGB)
-	@$(MESA_PYTHON2) $(FORMAT_SRGB) $< > $@
+$(LOCAL_GENERATED_SOURCES): PRIVATE_PYTHON := $(MESA_PYTHON2)
+$(UTIL_GENERATED_SOURCES): PRIVATE_CUSTOM_TOOL = $(PRIVATE_PYTHON) $^ > $@
+$(UTIL_GENERATED_SOURCES): $(intermediates)/%.c: $(LOCAL_PATH)/%.py $(LOCAL_PATH)/format/u_format.csv
+	$(transform-generated-source)
 
 include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
-
-# ---------------------------------------
-# Build host libmesa_util
-# ---------------------------------------
-
-include $(CLEAR_VARS)
-
-LOCAL_IS_HOST_MODULE := true
-LOCAL_CFLAGS := -D_POSIX_C_SOURCE=199309L
-
-LOCAL_SRC_FILES := \
-	$(MESA_UTIL_FILES)
-
-LOCAL_C_INCLUDES := \
-	$(MESA_TOP)/src/mesa \
-	$(MESA_TOP)/src/mapi \
-	$(MESA_TOP)/src
-
-LOCAL_MODULE := libmesa_util
-
-# Generated sources
-
-ifeq ($(LOCAL_MODULE_CLASS),)
-LOCAL_MODULE_CLASS := STATIC_LIBRARIES
-endif
-
-intermediates := $(call local-intermediates-dir)
-
-# This is the list of auto-generated files: sources and headers
-sources := $(addprefix $(intermediates)/, $(MESA_UTIL_GENERATED_FILES))
-
-LOCAL_GENERATED_SOURCES += $(sources)
-
-FORMAT_SRGB := $(LOCAL_PATH)/format_srgb.py
-
-$(intermediates)/format_srgb.c: $(FORMAT_SRGB)
-	@$(MESA_PYTHON2) $(FORMAT_SRGB) $< > $@
-
-include $(MESA_COMMON_MK)
-include $(BUILD_HOST_STATIC_LIBRARY)

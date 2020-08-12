@@ -47,7 +47,7 @@ struct flat_stage
 };
 
 
-static INLINE struct flat_stage *
+static inline struct flat_stage *
 flat_stage(struct draw_stage *stage)
 {
    return (struct flat_stage *) stage;
@@ -55,7 +55,7 @@ flat_stage(struct draw_stage *stage)
 
 
 /** Copy all the constant attributes from 'src' vertex to 'dst' vertex */
-static INLINE void copy_flats( struct draw_stage *stage,
+static inline void copy_flats( struct draw_stage *stage,
                                struct vertex_header *dst,
                                const struct vertex_header *src )
 {
@@ -70,7 +70,7 @@ static INLINE void copy_flats( struct draw_stage *stage,
 
 
 /** Copy all the color attributes from src vertex to dst0 & dst1 vertices */
-static INLINE void copy_flats2( struct draw_stage *stage,
+static inline void copy_flats2( struct draw_stage *stage,
                                 struct vertex_header *dst0,
                                 struct vertex_header *dst1,
                                 const struct vertex_header *src )
@@ -170,8 +170,9 @@ find_interp(const struct draw_fragment_shader *fs, int *indexed_interp,
    int interp;
    /* If it's gl_{Front,Back}{,Secondary}Color, pick up the mode
     * from the array we've filled before. */
-   if (semantic_name == TGSI_SEMANTIC_COLOR ||
-       semantic_name == TGSI_SEMANTIC_BCOLOR) {
+   if ((semantic_name == TGSI_SEMANTIC_COLOR ||
+        semantic_name == TGSI_SEMANTIC_BCOLOR) &&
+       semantic_index < 2) {
       interp = indexed_interp[semantic_index];
    } else {
       /* Otherwise, search in the FS inputs, with a decent default
@@ -216,7 +217,8 @@ static void flatshade_init_state( struct draw_stage *stage )
 
    if (fs) {
       for (i = 0; i < fs->info.num_inputs; i++) {
-         if (fs->info.input_semantic_name[i] == TGSI_SEMANTIC_COLOR) {
+         if (fs->info.input_semantic_name[i] == TGSI_SEMANTIC_COLOR &&
+             fs->info.input_semantic_index[i] < 2) {
             if (fs->info.input_interpolate[i] != TGSI_INTERPOLATE_COLOR)
                indexed_interp[fs->info.input_semantic_index[i]] = fs->info.input_interpolate[i];
          }
@@ -236,7 +238,8 @@ static void flatshade_init_state( struct draw_stage *stage )
                                info->output_semantic_index[i]);
       /* If it's flat, add it to the flat vector. */
 
-      if (interp == TGSI_INTERPOLATE_CONSTANT) {
+      if (interp == TGSI_INTERPOLATE_CONSTANT ||
+          (interp == TGSI_INTERPOLATE_COLOR && draw->rasterizer->flatshade)) {
          flat->flat_attribs[flat->num_flat_attribs] = i;
          flat->num_flat_attribs++;
       }
@@ -309,7 +312,7 @@ static void flatshade_destroy( struct draw_stage *stage )
 struct draw_stage *draw_flatshade_stage( struct draw_context *draw )
 {
    struct flat_stage *flatshade = CALLOC_STRUCT(flat_stage);
-   if (flatshade == NULL)
+   if (!flatshade)
       goto fail;
 
    flatshade->stage.draw = draw;

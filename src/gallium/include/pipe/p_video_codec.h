@@ -28,11 +28,11 @@
 #ifndef PIPE_VIDEO_CONTEXT_H
 #define PIPE_VIDEO_CONTEXT_H
 
+#include "pipe/p_video_state.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include "pipe/p_video_state.h"
 
 struct pipe_screen;
 struct pipe_surface;
@@ -104,7 +104,7 @@ struct pipe_video_codec
 
    /**
     * flush any outstanding command buffers to the hardware
-    * should be called before a video_buffer is acessed by the state tracker again
+    * should be called before a video_buffer is acessed by the gallium frontend again
     */
    void (*flush)(struct pipe_video_codec *codec);
 
@@ -122,10 +122,10 @@ struct pipe_video_buffer
    struct pipe_context *context;
 
    enum pipe_format buffer_format;
-   enum pipe_video_chroma_format chroma_format;
    unsigned width;
    unsigned height;
    bool interlaced;
+   unsigned bind;
 
    /**
     * destroy this video buffer
@@ -133,17 +133,17 @@ struct pipe_video_buffer
    void (*destroy)(struct pipe_video_buffer *buffer);
 
    /**
-    * get a individual sampler view for each plane
+    * get an individual sampler view for each plane
     */
    struct pipe_sampler_view **(*get_sampler_view_planes)(struct pipe_video_buffer *buffer);
 
    /**
-    * get a individual sampler view for each component
+    * get an individual sampler view for each component
     */
    struct pipe_sampler_view **(*get_sampler_view_components)(struct pipe_video_buffer *buffer);
 
    /**
-    * get a individual surfaces for each plane
+    * get an individual surfaces for each plane
     */
    struct pipe_surface **(*get_surfaces)(struct pipe_video_buffer *buffer);
 

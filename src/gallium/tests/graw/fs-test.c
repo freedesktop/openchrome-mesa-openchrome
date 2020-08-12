@@ -2,7 +2,7 @@
  * any utility code, just the graw interface and gallium.
  */
 
-#include "state_tracker/graw.h"
+#include "frontend/graw.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_context.h"
 #include "pipe/p_shader_tokens.h"
@@ -173,7 +173,7 @@ static void set_vertices( void )
 
    vbuf.stride = sizeof( struct vertex );
    vbuf.buffer_offset = 0;
-   vbuf.buffer = pipe_buffer_create_with_data(ctx,
+   vbuf.buffer.resource = pipe_buffer_create_with_data(ctx,
                                               PIPE_BIND_VERTEX_BUFFER,
                                               PIPE_USAGE_DEFAULT,
                                               sizeof(vertices),
@@ -232,7 +232,7 @@ static void draw( void )
 {
    union pipe_color_union clear_color = { {.1,.3,.5,0} };
 
-   ctx->clear(ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
+   ctx->clear(ctx, PIPE_CLEAR_COLOR, NULL, &clear_color, 0, 0);
    util_draw_arrays(ctx, PIPE_PRIM_TRIANGLES, 0, 3);
    ctx->flush(ctx, NULL, 0);
 
@@ -293,6 +293,7 @@ static void init_tex( void )
    tex2d[1][1][3] = 255;
 #endif
 
+   memset(&templat, 0, sizeof(templat));
    templat.target = PIPE_TEXTURE_2D;
    templat.format = PIPE_FORMAT_B8G8R8A8_UNORM;
    templat.width0 = SIZE;
@@ -300,7 +301,6 @@ static void init_tex( void )
    templat.depth0 = 1;
    templat.array_size = 1;
    templat.last_level = 0;
-   templat.nr_samples = 1;
    templat.bind = PIPE_BIND_SAMPLER_VIEW;
 
    
@@ -311,14 +311,14 @@ static void init_tex( void )
 
    u_box_2d(0,0,SIZE,SIZE, &box);
 
-   ctx->transfer_inline_write(ctx,
-                              samptex,
-                              0,
-                              PIPE_TRANSFER_WRITE,
-                              &box,
-                              tex2d,
-                              sizeof tex2d[0],
-                              sizeof tex2d);
+   ctx->texture_subdata(ctx,
+                        samptex,
+                        0,
+                        PIPE_TRANSFER_WRITE,
+                        &box,
+                        tex2d,
+                        sizeof tex2d[0],
+                        sizeof tex2d);
 
    /* Possibly read back & compare against original data:
     */
@@ -398,10 +398,11 @@ static void init( void )
       exit(1);
    }
 
-   ctx = screen->context_create(screen, NULL);
+   ctx = screen->context_create(screen, NULL, 0);
    if (ctx == NULL)
       exit(3);
 
+   memset(&templat, 0, sizeof(templat));
    templat.target = PIPE_TEXTURE_2D;
    templat.format = formats[i];
    templat.width0 = WIDTH;
@@ -409,7 +410,6 @@ static void init( void )
    templat.depth0 = 1;
    templat.array_size = 1;
    templat.last_level = 0;
-   templat.nr_samples = 1;
    templat.bind = (PIPE_BIND_RENDER_TARGET |
                    PIPE_BIND_DISPLAY_TARGET);
    
@@ -458,7 +458,8 @@ static void init( void )
       rasterizer.cull_face = PIPE_FACE_NONE;
       rasterizer.half_pixel_center = 1;
       rasterizer.bottom_edge_rule = 1;
-      rasterizer.depth_clip = 1;
+      rasterizer.depth_clip_near = 1;
+      rasterizer.depth_clip_far = 1;
       handle = ctx->create_rasterizer_state(ctx, &rasterizer);
       ctx->bind_rasterizer_state(ctx, handle);
    }

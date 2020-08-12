@@ -25,7 +25,7 @@
 
 #include "main/glheader.h"
 #include "main/context.h"
-#include "main/imports.h"
+
 #include "main/macros.h"
 
 #include "s_context.h"
@@ -193,8 +193,8 @@ _swrast_logicop_rgba_span(struct gl_context *ctx, struct gl_renderbuffer *rb,
 {
    void *rbPixels;
 
-   ASSERT(span->end < SWRAST_MAX_WIDTH);
-   ASSERT(span->arrayMask & SPAN_RGBA);
+   assert(span->end < SWRAST_MAX_WIDTH);
+   assert(span->arrayMask & SPAN_RGBA);
 
    rbPixels = _swrast_get_dest_rgba(ctx, rb, span);
 

@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
  *
@@ -50,6 +48,6 @@ fd_sw_query(struct fd_query *q)
 }
 
 struct fd_query * fd_sw_create_query(struct fd_context *ctx,
-		unsigned query_type);
+		unsigned query_type, unsigned index);
 
 #endif /* FREEDRENO_QUERY_SW_H_ */

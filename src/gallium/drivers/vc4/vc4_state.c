@@ -23,6 +23,7 @@
  */
 
 #include "pipe/p_state.h"
+#include "util/u_framebuffer.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -51,7 +52,9 @@ vc4_set_blend_color(struct pipe_context *pctx,
                     const struct pipe_blend_color *blend_color)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
-        vc4->blend_color = *blend_color;
+        vc4->blend_color.f = *blend_color;
+        for (int i = 0; i < 4; i++)
+                vc4->blend_color.ub[i] = float_to_ubyte(blend_color->color[i]);
         vc4->dirty |= VC4_DIRTY_BLEND_COLOR;
 }
 
@@ -77,7 +80,7 @@ static void
 vc4_set_sample_mask(struct pipe_context *pctx, unsigned sample_mask)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
-        vc4->sample_mask = (uint16_t)sample_mask;
+        vc4->sample_mask = sample_mask & ((1 << VC4_MAX_SAMPLES) - 1);
         vc4->dirty |= VC4_DIRTY_SAMPLE_MASK;
 }
 
@@ -92,6 +95,9 @@ vc4_create_rasterizer_state(struct pipe_context *pctx,
                             const struct pipe_rasterizer_state *cso)
 {
         struct vc4_rasterizer_state *so;
+        struct V3D21_DEPTH_OFFSET depth_offset = { V3D21_DEPTH_OFFSET_header };
+        struct V3D21_POINT_SIZE point_size = { V3D21_POINT_SIZE_header };
+        struct V3D21_LINE_WIDTH line_width = { V3D21_LINE_WIDTH_header };
 
         so = CALLOC_STRUCT(vc4_rasterizer_state);
         if (!so)
@@ -107,7 +113,9 @@ vc4_create_rasterizer_state(struct pipe_context *pctx,
         /* Workaround: HW-2726 PTB does not handle zero-size points (BCM2835,
          * BCM21553).
          */
-        so->point_size = MAX2(cso->point_size, .125);
+        point_size.point_size = MAX2(cso->point_size, .125f);
+
+        line_width.line_width = cso->line_width;
 
         if (cso->front_ccw)
                 so->config_bits[0] |= VC4_CONFIG_BITS_CW_PRIMITIVES;
@@ -115,8 +123,29 @@ vc4_create_rasterizer_state(struct pipe_context *pctx,
         if (cso->offset_tri) {
                 so->config_bits[0] |= VC4_CONFIG_BITS_ENABLE_DEPTH_OFFSET;
 
-                so->offset_units = float_to_187_half(cso->offset_units);
-                so->offset_factor = float_to_187_half(cso->offset_scale);
+                depth_offset.depth_offset_units =
+                        float_to_187_half(cso->offset_units);
+                depth_offset.depth_offset_factor =
+                        float_to_187_half(cso->offset_scale);
+        }
+
+        if (cso->multisample)
+                so->config_bits[0] |= VC4_CONFIG_BITS_RASTERIZER_OVERSAMPLE_4X;
+
+        V3D21_DEPTH_OFFSET_pack(NULL, so->packed.depth_offset, &depth_offset);
+        V3D21_POINT_SIZE_pack(NULL, so->packed.point_size, &point_size);
+        V3D21_LINE_WIDTH_pack(NULL, so->packed.line_width, &line_width);
+
+        if (cso->tile_raster_order_fixed) {
+                so->tile_raster_order_flags |= VC4_SUBMIT_CL_FIXED_RCL_ORDER;
+                if (cso->tile_raster_order_increasing_x) {
+                        so->tile_raster_order_flags |=
+                                VC4_SUBMIT_CL_RCL_ORDER_INCREASING_X;
+                }
+                if (cso->tile_raster_order_increasing_y) {
+                        so->tile_raster_order_flags |=
+                                VC4_SUBMIT_CL_RCL_ORDER_INCREASING_Y;
+                }
         }
 
         return so;
@@ -297,40 +326,6 @@ vc4_set_vertex_buffers(struct pipe_context *pctx,
 }
 
 static void
-vc4_set_index_buffer(struct pipe_context *pctx,
-                     const struct pipe_index_buffer *ib)
-{
-        struct vc4_context *vc4 = vc4_context(pctx);
-
-        if (ib) {
-                assert(!ib->user_buffer);
-
-                if (ib->index_size == 4) {
-                        struct pipe_resource tmpl = *ib->buffer;
-                        assert(tmpl.format == PIPE_FORMAT_R8_UNORM);
-                        assert(tmpl.height0 == 1);
-                        tmpl.width0 = (tmpl.width0 - ib->offset) / 2;
-                        struct pipe_resource *pshadow =
-                                vc4_resource_create(&vc4->screen->base, &tmpl);
-                        struct vc4_resource *shadow = vc4_resource(pshadow);
-                        pipe_resource_reference(&shadow->shadow_parent, ib->buffer);
-
-                        pipe_resource_reference(&vc4->indexbuf.buffer, NULL);
-                        vc4->indexbuf.buffer = pshadow;
-                        vc4->indexbuf.index_size = 2;
-                } else {
-                        pipe_resource_reference(&vc4->indexbuf.buffer, ib->buffer);
-                        vc4->indexbuf.index_size = ib->index_size;
-                }
-                vc4->indexbuf.offset = ib->offset;
-        } else {
-                pipe_resource_reference(&vc4->indexbuf.buffer, NULL);
-        }
-
-        vc4->dirty |= VC4_DIRTY_INDEXBUF;
-}
-
-static void
 vc4_blend_state_bind(struct pipe_context *pctx, void *hwcso)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
@@ -385,15 +380,14 @@ vc4_vertex_state_bind(struct pipe_context *pctx, void *hwcso)
 }
 
 static void
-vc4_set_constant_buffer(struct pipe_context *pctx, uint shader, uint index,
-                        struct pipe_constant_buffer *cb)
+vc4_set_constant_buffer(struct pipe_context *pctx,
+                        enum pipe_shader_type shader, uint index,
+                        const struct pipe_constant_buffer *cb)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
         struct vc4_constbuf_stateobj *so = &vc4->constbuf[shader];
 
-        assert(index == 0);
-
-        /* Note that the state tracker can unbind constant buffers by
+        /* Note that the gallium frontend can unbind constant buffers by
          * passing NULL here.
          */
         if (unlikely(!cb)) {
@@ -402,7 +396,10 @@ vc4_set_constant_buffer(struct pipe_context *pctx, uint shader, uint index,
                 return;
         }
 
-        assert(!cb->buffer);
+        if (index == 1 && so->cb[index].buffer_size != cb->buffer_size)
+                vc4->dirty |= VC4_DIRTY_UBO_1_SIZE;
+
+        pipe_resource_reference(&so->cb[index].buffer, cb->buffer);
         so->cb[index].buffer_offset = cb->buffer_offset;
         so->cb[index].buffer_size   = cb->buffer_size;
         so->cb[index].user_buffer   = cb->user_buffer;
@@ -418,21 +415,10 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
 {
         struct vc4_context *vc4 = vc4_context(pctx);
         struct pipe_framebuffer_state *cso = &vc4->framebuffer;
-        unsigned i;
 
-        vc4_flush(pctx);
+        vc4->job = NULL;
 
-        for (i = 0; i < framebuffer->nr_cbufs; i++)
-                pipe_surface_reference(&cso->cbufs[i], framebuffer->cbufs[i]);
-        for (; i < vc4->framebuffer.nr_cbufs; i++)
-                pipe_surface_reference(&cso->cbufs[i], NULL);
-
-        cso->nr_cbufs = framebuffer->nr_cbufs;
-
-        pipe_surface_reference(&cso->zsbuf, framebuffer->zsbuf);
-
-        cso->width = framebuffer->width;
-        cso->height = framebuffer->height;
+        util_copy_framebuffer_state(cso, framebuffer);
 
         /* Nonzero texture mipmap levels are laid out as if they were in
          * power-of-two-sized spaces.  The renderbuffer config infers its
@@ -458,10 +444,8 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
 }
 
 static struct vc4_texture_stateobj *
-vc4_get_stage_tex(struct vc4_context *vc4, unsigned shader)
+vc4_get_stage_tex(struct vc4_context *vc4, enum pipe_shader_type shader)
 {
-        vc4->dirty |= VC4_DIRTY_TEXSTATE;
-
         switch (shader) {
         case PIPE_SHADER_FRAGMENT:
                 vc4->dirty |= VC4_DIRTY_FRAGTEX;
@@ -477,16 +461,69 @@ vc4_get_stage_tex(struct vc4_context *vc4, unsigned shader)
         }
 }
 
+static uint32_t translate_wrap(uint32_t p_wrap, bool using_nearest)
+{
+        switch (p_wrap) {
+        case PIPE_TEX_WRAP_REPEAT:
+                return 0;
+        case PIPE_TEX_WRAP_CLAMP_TO_EDGE:
+                return 1;
+        case PIPE_TEX_WRAP_MIRROR_REPEAT:
+                return 2;
+        case PIPE_TEX_WRAP_CLAMP_TO_BORDER:
+                return 3;
+        case PIPE_TEX_WRAP_CLAMP:
+                return (using_nearest ? 1 : 3);
+        default:
+                fprintf(stderr, "Unknown wrap mode %d\n", p_wrap);
+                assert(!"not reached");
+                return 0;
+        }
+}
+
 static void *
 vc4_create_sampler_state(struct pipe_context *pctx,
                          const struct pipe_sampler_state *cso)
 {
-        return vc4_generic_cso_state_create(cso, sizeof(*cso));
+        static const uint8_t minfilter_map[6] = {
+                VC4_TEX_P1_MINFILT_NEAR_MIP_NEAR,
+                VC4_TEX_P1_MINFILT_LIN_MIP_NEAR,
+                VC4_TEX_P1_MINFILT_NEAR_MIP_LIN,
+                VC4_TEX_P1_MINFILT_LIN_MIP_LIN,
+                VC4_TEX_P1_MINFILT_NEAREST,
+                VC4_TEX_P1_MINFILT_LINEAR,
+        };
+        static const uint32_t magfilter_map[] = {
+                [PIPE_TEX_FILTER_NEAREST] = VC4_TEX_P1_MAGFILT_NEAREST,
+                [PIPE_TEX_FILTER_LINEAR] = VC4_TEX_P1_MAGFILT_LINEAR,
+        };
+        bool either_nearest =
+                (cso->mag_img_filter == PIPE_TEX_MIPFILTER_NEAREST ||
+                 cso->min_img_filter == PIPE_TEX_MIPFILTER_NEAREST);
+        struct vc4_sampler_state *so = CALLOC_STRUCT(vc4_sampler_state);
+
+        if (!so)
+                return NULL;
+
+        memcpy(so, cso, sizeof(*cso));
+
+        so->texture_p1 =
+                (VC4_SET_FIELD(magfilter_map[cso->mag_img_filter],
+                               VC4_TEX_P1_MAGFILT) |
+                 VC4_SET_FIELD(minfilter_map[cso->min_mip_filter * 2 +
+                                             cso->min_img_filter],
+                               VC4_TEX_P1_MINFILT) |
+                 VC4_SET_FIELD(translate_wrap(cso->wrap_s, either_nearest),
+                               VC4_TEX_P1_WRAP_S) |
+                 VC4_SET_FIELD(translate_wrap(cso->wrap_t, either_nearest),
+                               VC4_TEX_P1_WRAP_T));
+
+        return so;
 }
 
 static void
 vc4_sampler_states_bind(struct pipe_context *pctx,
-                        unsigned shader, unsigned start,
+                        enum pipe_shader_type shader, unsigned start,
                         unsigned nr, void **hwcso)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
@@ -500,12 +537,10 @@ vc4_sampler_states_bind(struct pipe_context *pctx,
                 if (hwcso[i])
                         new_nr = i + 1;
                 stage_tex->samplers[i] = hwcso[i];
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         for (; i < stage_tex->num_samplers; i++) {
                 stage_tex->samplers[i] = NULL;
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         stage_tex->num_samplers = new_nr;
@@ -515,51 +550,104 @@ static struct pipe_sampler_view *
 vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                         const struct pipe_sampler_view *cso)
 {
-        struct pipe_sampler_view *so = malloc(sizeof(*so));
+        struct vc4_sampler_view *so = CALLOC_STRUCT(vc4_sampler_view);
+        struct vc4_resource *rsc = vc4_resource(prsc);
 
         if (!so)
                 return NULL;
 
-        *so = *cso;
+        so->base = *cso;
 
-        pipe_reference(NULL, &prsc->reference);
+        so->base.texture = NULL;
+        pipe_resource_reference(&so->base.texture, prsc);
+        so->base.reference.count = 1;
+        so->base.context = pctx;
 
         /* There is no hardware level clamping, and the start address of a
          * texture may be misaligned, so in that case we have to copy to a
          * temporary.
+         *
+         * Also, Raspberry Pi doesn't support sampling from raster textures,
+         * so we also have to copy to a temporary then.
          */
-        if (so->u.tex.first_level) {
-                struct vc4_resource *shadow_parent = vc4_resource(prsc);
-                struct pipe_resource tmpl = shadow_parent->base.b;
-                struct vc4_resource *clone;
+        if ((cso->u.tex.first_level &&
+             (cso->u.tex.first_level != cso->u.tex.last_level)) ||
+            rsc->vc4_format == VC4_TEXTURE_TYPE_RGBA32R ||
+            rsc->vc4_format == ~0) {
+                struct vc4_resource *shadow_parent = rsc;
+                struct pipe_resource tmpl = {
+                        .target = prsc->target,
+                        .format = prsc->format,
+                        .width0 = u_minify(prsc->width0,
+                                           cso->u.tex.first_level),
+                        .height0 = u_minify(prsc->height0,
+                                            cso->u.tex.first_level),
+                        .bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET,
+                        .last_level = cso->u.tex.last_level - cso->u.tex.first_level,
+                        .nr_samples = prsc->nr_samples,
+                };
 
-                tmpl.width0 = u_minify(tmpl.width0, so->u.tex.first_level);
-                tmpl.height0 = u_minify(tmpl.height0, so->u.tex.first_level);
-                tmpl.last_level = so->u.tex.last_level - so->u.tex.first_level;
-
+                /* Create the shadow texture.  The rest of the texture
+                 * parameter setup will use the shadow.
+                 */
                 prsc = vc4_resource_create(pctx->screen, &tmpl);
-                clone = vc4_resource(prsc);
-                clone->shadow_parent = &shadow_parent->base.b;
-                /* Flag it as needing update of the contents from the parent. */
-                clone->writes = shadow_parent->writes - 1;
-        }
-        so->texture = prsc;
-        so->reference.count = 1;
-        so->context = pctx;
+                if (!prsc) {
+                        free(so);
+                        return NULL;
+                }
+                rsc = vc4_resource(prsc);
+                vc4_bo_label(vc4_screen(pctx->screen), rsc->bo,
+                            "tiling shadow %dx%d",
+                             tmpl.width0, tmpl.height0);
 
-        return so;
+                /* Flag it as needing update of the contents from the parent. */
+                rsc->writes = shadow_parent->writes - 1;
+                assert(rsc->vc4_format != VC4_TEXTURE_TYPE_RGBA32R);
+
+                so->texture = prsc;
+        } else {
+                pipe_resource_reference(&so->texture, prsc);
+
+                if (cso->u.tex.first_level) {
+                        so->force_first_level = true;
+                }
+        }
+
+        so->texture_p0 =
+                (VC4_SET_FIELD((rsc->slices[0].offset +
+                                cso->u.tex.first_layer *
+                                rsc->cube_map_stride) >> 12, VC4_TEX_P0_OFFSET) |
+                 VC4_SET_FIELD(rsc->vc4_format & 15, VC4_TEX_P0_TYPE) |
+                 VC4_SET_FIELD(so->force_first_level ?
+                               cso->u.tex.last_level :
+                               cso->u.tex.last_level -
+                               cso->u.tex.first_level, VC4_TEX_P0_MIPLVLS) |
+                 VC4_SET_FIELD(cso->target == PIPE_TEXTURE_CUBE,
+                               VC4_TEX_P0_CMMODE));
+        so->texture_p1 =
+                (VC4_SET_FIELD(rsc->vc4_format >> 4, VC4_TEX_P1_TYPE4) |
+                 VC4_SET_FIELD(prsc->height0 & 2047, VC4_TEX_P1_HEIGHT) |
+                 VC4_SET_FIELD(prsc->width0 & 2047, VC4_TEX_P1_WIDTH));
+
+        if (prsc->format == PIPE_FORMAT_ETC1_RGB8)
+                so->texture_p1 |= VC4_TEX_P1_ETCFLIP_MASK;
+
+        return &so->base;
 }
 
 static void
 vc4_sampler_view_destroy(struct pipe_context *pctx,
-                         struct pipe_sampler_view *view)
+                         struct pipe_sampler_view *pview)
 {
+        struct vc4_sampler_view *view = vc4_sampler_view(pview);
+        pipe_resource_reference(&pview->texture, NULL);
         pipe_resource_reference(&view->texture, NULL);
         free(view);
 }
 
 static void
-vc4_set_sampler_views(struct pipe_context *pctx, unsigned shader,
+vc4_set_sampler_views(struct pipe_context *pctx,
+                      enum pipe_shader_type shader,
                       unsigned start, unsigned nr,
                       struct pipe_sampler_view **views)
 {
@@ -570,21 +658,14 @@ vc4_set_sampler_views(struct pipe_context *pctx, unsigned shader,
 
         assert(start == 0);
 
-        vc4->dirty |= VC4_DIRTY_TEXSTATE;
-
         for (i = 0; i < nr; i++) {
-                if (views[i]) {
+                if (views[i])
                         new_nr = i + 1;
-                        if (views[i]->u.tex.first_level != 0)
-                                vc4_update_shadow_baselevel_texture(pctx, views[i]);
-                }
                 pipe_sampler_view_reference(&stage_tex->textures[i], views[i]);
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         for (; i < stage_tex->num_textures; i++) {
                 pipe_sampler_view_reference(&stage_tex->textures[i], NULL);
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         stage_tex->num_textures = new_nr;
@@ -604,7 +685,6 @@ vc4_state_init(struct pipe_context *pctx)
         pctx->set_viewport_states = vc4_set_viewport_states;
 
         pctx->set_vertex_buffers = vc4_set_vertex_buffers;
-        pctx->set_index_buffer = vc4_set_index_buffer;
 
         pctx->create_blend_state = vc4_create_blend_state;
         pctx->bind_blend_state = vc4_blend_state_bind;

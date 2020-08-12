@@ -31,27 +31,20 @@
 #define _M_VECTOR_H_
 
 #include "main/glheader.h"
+#define MATH_ASM_PTR_SIZE sizeof(void *)
+#include "math/m_vector_asm.h"
 
-
-#define VEC_DIRTY_0        0x1
-#define VEC_DIRTY_1        0x2
-#define VEC_DIRTY_2        0x4
-#define VEC_DIRTY_3        0x8
 #define VEC_MALLOC         0x10 /* storage field points to self-allocated mem*/
 #define VEC_NOT_WRITEABLE  0x40	/* writable elements to hold clipped data */
 #define VEC_BAD_STRIDE     0x100 /* matches tnl's prefered stride */
 
 
-#define VEC_SIZE_1   VEC_DIRTY_0
-#define VEC_SIZE_2   (VEC_DIRTY_0|VEC_DIRTY_1)
-#define VEC_SIZE_3   (VEC_DIRTY_0|VEC_DIRTY_1|VEC_DIRTY_2)
-#define VEC_SIZE_4   (VEC_DIRTY_0|VEC_DIRTY_1|VEC_DIRTY_2|VEC_DIRTY_3)
 
 
 
 /**
  * Wrap all the information about vectors up in a struct.  Has
- * additional fields compared to the other vectors to help us track of
+ * additional fields compared to the other vectors to help us track
  * different vertex sizes, and whether we need to clean columns out
  * because they contain non-(0,0,0,1) values.
  *
@@ -61,7 +54,7 @@
  */
 typedef struct {
    GLfloat (*data)[4];	/**< may be malloc'd or point to client data */
-   GLfloat *start;	/**< points somewhere inside of <data> */
+   GLfloat *start;	/**< points somewhere inside of GLvector4f::data */
    GLuint count;	/**< size of the vector (in elements) */
    GLuint stride;	/**< stride from one element to the next (in bytes) */
    GLuint size;		/**< 2-4 for vertices and 1-4 for texcoords */

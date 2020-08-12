@@ -41,49 +41,13 @@
 #include "draw/draw_context.h"
 
 #include "st_context.h"
+#include "st_debug.h"
 #include "st_program.h"
 #include "st_mesa_to_tgsi.h"
 #include "st_cb_program.h"
-#include "st_glsl_to_tgsi.h"
-
-
-
-/**
- * Called via ctx->Driver.BindProgram() to bind an ARB vertex or
- * fragment program.
- */
-static void
-st_bind_program(struct gl_context *ctx, GLenum target, struct gl_program *prog)
-{
-   struct st_context *st = st_context(ctx);
-
-   switch (target) {
-   case GL_VERTEX_PROGRAM_ARB: 
-      st->dirty.st |= ST_NEW_VERTEX_PROGRAM;
-      break;
-   case GL_FRAGMENT_PROGRAM_ARB:
-      st->dirty.st |= ST_NEW_FRAGMENT_PROGRAM;
-      break;
-   case MESA_GEOMETRY_PROGRAM:
-      st->dirty.st |= ST_NEW_GEOMETRY_PROGRAM;
-      break;
-   }
-}
-
-
-/**
- * Called via ctx->Driver.UseProgram() to bind a linked GLSL program
- * (vertex shader + fragment shader).
- */
-static void
-st_use_program(struct gl_context *ctx, struct gl_shader_program *shProg)
-{
-   struct st_context *st = st_context(ctx);
-
-   st->dirty.st |= ST_NEW_FRAGMENT_PROGRAM;
-   st->dirty.st |= ST_NEW_VERTEX_PROGRAM;
-   st->dirty.st |= ST_NEW_GEOMETRY_PROGRAM;
-}
+#include "st_glsl_to_ir.h"
+#include "st_atifs_to_tgsi.h"
+#include "st_util.h"
 
 
 /**
@@ -91,28 +55,21 @@ st_use_program(struct gl_context *ctx, struct gl_shader_program *shProg)
  * fragment program.
  */
 static struct gl_program *
-st_new_program(struct gl_context *ctx, GLenum target, GLuint id)
+st_new_program(struct gl_context *ctx, gl_shader_stage stage, GLuint id,
+               bool is_arb_asm)
 {
-   switch (target) {
-   case GL_VERTEX_PROGRAM_ARB: {
-      struct st_vertex_program *prog = ST_CALLOC_STRUCT(st_vertex_program);
-      return _mesa_init_vertex_program(ctx, &prog->Base, target, id);
-   }
+   struct st_program *prog;
 
-   case GL_FRAGMENT_PROGRAM_ARB: {
-      struct st_fragment_program *prog = ST_CALLOC_STRUCT(st_fragment_program);
-      return _mesa_init_fragment_program(ctx, &prog->Base, target, id);
-   }
-
-   case MESA_GEOMETRY_PROGRAM: {
-      struct st_geometry_program *prog = ST_CALLOC_STRUCT(st_geometry_program);
-      return _mesa_init_geometry_program(ctx, &prog->Base, target, id);
-   }
-
+   switch (stage) {
+   case MESA_SHADER_VERTEX:
+      prog = (struct st_program*)rzalloc(NULL, struct st_vertex_program);
+      break;
    default:
-      assert(0);
-      return NULL;
+      prog = rzalloc(NULL, struct st_program);
+      break;
    }
+
+   return _mesa_init_gl_program(&prog->Base, stage, id, is_arb_asm);
 }
 
 
@@ -123,64 +80,18 @@ static void
 st_delete_program(struct gl_context *ctx, struct gl_program *prog)
 {
    struct st_context *st = st_context(ctx);
+   struct st_program *stp = st_program(prog);
 
-   switch( prog->Target ) {
-   case GL_VERTEX_PROGRAM_ARB:
-      {
-         struct st_vertex_program *stvp = (struct st_vertex_program *) prog;
-         st_release_vp_variants( st, stvp );
-         
-         if (stvp->glsl_to_tgsi)
-            free_glsl_to_tgsi_visitor(stvp->glsl_to_tgsi);
-      }
-      break;
-   case MESA_GEOMETRY_PROGRAM:
-      {
-         struct st_geometry_program *stgp =
-            (struct st_geometry_program *) prog;
+   st_release_variants(st, stp);
 
-         st_release_gp_variants(st, stgp);
-         
-         if (stgp->glsl_to_tgsi)
-            free_glsl_to_tgsi_visitor(stgp->glsl_to_tgsi);
+   if (stp->glsl_to_tgsi)
+      free_glsl_to_tgsi_visitor(stp->glsl_to_tgsi);
 
-         if (stgp->tgsi.tokens) {
-            st_free_tokens((void *) stgp->tgsi.tokens);
-            stgp->tgsi.tokens = NULL;
-         }
-      }
-      break;
-   case GL_FRAGMENT_PROGRAM_ARB:
-      {
-         struct st_fragment_program *stfp =
-            (struct st_fragment_program *) prog;
-
-         st_release_fp_variants(st, stfp);
-         
-         if (stfp->glsl_to_tgsi)
-            free_glsl_to_tgsi_visitor(stfp->glsl_to_tgsi);
-      }
-      break;
-   default:
-      assert(0); /* problem */
-   }
+   free(stp->serialized_nir);
 
    /* delete base class */
    _mesa_delete_program( ctx, prog );
 }
-
-
-/**
- * Called via ctx->Driver.IsProgramNative()
- */
-static GLboolean
-st_is_program_native(struct gl_context *ctx,
-                     GLenum target, 
-                     struct gl_program *prog)
-{
-   return GL_TRUE;
-}
-
 
 /**
  * Called via ctx->Driver.ProgramStringNotify()
@@ -193,41 +104,86 @@ st_program_string_notify( struct gl_context *ctx,
                                            struct gl_program *prog )
 {
    struct st_context *st = st_context(ctx);
+   struct st_program *stp = (struct st_program *) prog;
 
-   if (target == GL_FRAGMENT_PROGRAM_ARB) {
-      struct st_fragment_program *stfp = (struct st_fragment_program *) prog;
+   /* GLSL-to-NIR should not end up here. */
+   assert(!stp->shader_program);
 
-      st_release_fp_variants(st, stfp);
+   st_release_variants(st, stp);
 
-      if (st->fp == stfp)
-	 st->dirty.st |= ST_NEW_FRAGMENT_PROGRAM;
-   }
-   else if (target == MESA_GEOMETRY_PROGRAM) {
-      struct st_geometry_program *stgp = (struct st_geometry_program *) prog;
+   if (target == GL_FRAGMENT_PROGRAM_ARB ||
+       target == GL_FRAGMENT_SHADER_ATI) {
+      if (target == GL_FRAGMENT_SHADER_ATI) {
+         assert(stp->ati_fs);
+         assert(stp->ati_fs->Program == prog);
 
-      st_release_gp_variants(st, stgp);
-
-      if (stgp->tgsi.tokens) {
-         st_free_tokens((void *) stgp->tgsi.tokens);
-         stgp->tgsi.tokens = NULL;
+         st_init_atifs_prog(ctx, prog);
       }
 
-      if (st->gp == stgp)
-	 st->dirty.st |= ST_NEW_GEOMETRY_PROGRAM;
-   }
-   else if (target == GL_VERTEX_PROGRAM_ARB) {
-      struct st_vertex_program *stvp = (struct st_vertex_program *) prog;
-
-      st_release_vp_variants( st, stvp );
-
-      if (st->vp == stvp)
-	 st->dirty.st |= ST_NEW_VERTEX_PROGRAM;
+      if (!st_translate_fragment_program(st, stp))
+         return false;
+   } else if (target == GL_VERTEX_PROGRAM_ARB) {
+      if (!st_translate_vertex_program(st, stp))
+         return false;
+   } else {
+      if (!st_translate_common_program(st, stp))
+         return false;
    }
 
-   /* XXX check if program is legal, within limits */
+   st_finalize_program(st, prog);
    return GL_TRUE;
 }
 
+/**
+ * Called via ctx->Driver.NewATIfs()
+ * Called in glEndFragmentShaderATI()
+ */
+static struct gl_program *
+st_new_ati_fs(struct gl_context *ctx, struct ati_fragment_shader *curProg)
+{
+   struct gl_program *prog = ctx->Driver.NewProgram(ctx, MESA_SHADER_FRAGMENT,
+         curProg->Id, true);
+   struct st_program *stfp = (struct st_program *)prog;
+   stfp->ati_fs = curProg;
+   return prog;
+}
+
+static void
+st_max_shader_compiler_threads(struct gl_context *ctx, unsigned count)
+{
+   struct pipe_screen *screen = st_context(ctx)->pipe->screen;
+
+   if (screen->set_max_shader_compiler_threads)
+      screen->set_max_shader_compiler_threads(screen, count);
+}
+
+static bool
+st_get_shader_program_completion_status(struct gl_context *ctx,
+                                        struct gl_shader_program *shprog)
+{
+   struct pipe_screen *screen = st_context(ctx)->pipe->screen;
+
+   if (!screen->is_parallel_shader_compilation_finished)
+      return true;
+
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      struct gl_linked_shader *linked = shprog->_LinkedShaders[i];
+      void *sh = NULL;
+
+      if (!linked || !linked->Program)
+         continue;
+
+      if (st_program(linked->Program)->variants)
+         sh = st_program(linked->Program)->variants->driver_shader;
+
+      unsigned type = pipe_shader_type_from_mesa(i);
+
+      if (sh &&
+          !screen->is_parallel_shader_compilation_finished(screen, sh, type))
+         return false;
+   }
+   return true;
+}
 
 /**
  * Plug in the program and shader-related device driver functions.
@@ -235,12 +191,12 @@ st_program_string_notify( struct gl_context *ctx,
 void
 st_init_program_functions(struct dd_function_table *functions)
 {
-   functions->BindProgram = st_bind_program;
-   functions->UseProgram = st_use_program;
    functions->NewProgram = st_new_program;
    functions->DeleteProgram = st_delete_program;
-   functions->IsProgramNative = st_is_program_native;
    functions->ProgramStringNotify = st_program_string_notify;
-   
+   functions->NewATIfs = st_new_ati_fs;
    functions->LinkShader = st_link_shader;
+   functions->SetMaxShaderCompilerThreads = st_max_shader_compiler_threads;
+   functions->GetShaderProgramCompletionStatus =
+      st_get_shader_program_completion_status;
 }

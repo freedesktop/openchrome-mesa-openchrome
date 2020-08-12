@@ -258,153 +258,21 @@ transform_dst(struct tgsi_transform_context *tctx,
    }
 }
 
-/* XPD - Cross Product
- *   dst.x = src0.y \times src1.z - src1.y \times src0.z
- *   dst.y = src0.z \times src1.x - src1.z \times src0.x
- *   dst.z = src0.x \times src1.y - src1.x \times src0.y
- *   dst.w = 1.0
- *
- * ; needs: 2 tmp, imm{1.0}
- * MUL tmpA.xyz, src0.yzx, src1.zxy
- * MUL tmpB.xyz, src1.yzx, src0.zxy
- * SUB dst.xyz, tmpA.xyz, tmpB.xyz
- * MOV dst.w, imm{1.0}
- */
-#define XPD_GROW (NINST(2) + NINST(2) + NINST(2) + NINST(1) - OINST(2))
-#define XPD_TMP  2
-static void
-transform_xpd(struct tgsi_transform_context *tctx,
-              struct tgsi_full_instruction *inst)
-{
-   struct tgsi_lowering_context *ctx = tgsi_lowering_context(tctx);
-   struct tgsi_full_dst_register *dst  = &inst->Dst[0];
-   struct tgsi_full_src_register *src0 = &inst->Src[0];
-   struct tgsi_full_src_register *src1 = &inst->Src[1];
-   struct tgsi_full_instruction new_inst;
-
-   if (dst->Register.WriteMask & TGSI_WRITEMASK_XYZ) {
-      /* MUL tmpA.xyz, src0.yzx, src1.zxy */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_MUL;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_XYZ);
-      new_inst.Instruction.NumSrcRegs = 2;
-      reg_src(&new_inst.Src[0], src0, SWIZ(Y, Z, X, _));
-      reg_src(&new_inst.Src[1], src1, SWIZ(Z, X, Y, _));
-      tctx->emit_instruction(tctx, &new_inst);
-
-      /* MUL tmpB.xyz, src1.yzx, src0.zxy */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_MUL;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], &ctx->tmp[B].dst, TGSI_WRITEMASK_XYZ);
-      new_inst.Instruction.NumSrcRegs = 2;
-      reg_src(&new_inst.Src[0], src1, SWIZ(Y, Z, X, _));
-      reg_src(&new_inst.Src[1], src0, SWIZ(Z, X, Y, _));
-      tctx->emit_instruction(tctx, &new_inst);
-
-      /* SUB dst.xyz, tmpA.xyz, tmpB.xyz */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_SUB;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_XYZ);
-      new_inst.Instruction.NumSrcRegs = 2;
-      reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(X, Y, Z, _));
-      reg_src(&new_inst.Src[1], &ctx->tmp[B].src, SWIZ(X, Y, Z, _));
-      tctx->emit_instruction(tctx, &new_inst);
-   }
-
-   if (dst->Register.WriteMask & TGSI_WRITEMASK_W) {
-      /* MOV dst.w, imm{1.0} */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_MOV;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_W);
-      new_inst.Instruction.NumSrcRegs = 1;
-      reg_src(&new_inst.Src[0], &ctx->imm, SWIZ(_, _, _, Y));
-      tctx->emit_instruction(tctx, &new_inst);
-   }
-}
-
-/* SCS - Sine Cosine
- *   dst.x = \cos{src.x}
- *   dst.y = \sin{src.x}
- *   dst.z = 0.0
- *   dst.w = 1.0
- *
- * ; needs: 1 tmp, imm{0.0, 1.0}
- * if (dst.x aliases src.x) {
- *   MOV tmpA.x, src.x
- *   src = tmpA
- * }
- * COS dst.x, src.x
- * SIN dst.y, src.x
- * MOV dst.zw, imm{0.0, 1.0}
- */
-#define SCS_GROW (NINST(1) + NINST(1) + NINST(1) + NINST(1) - OINST(1))
-#define SCS_TMP  1
-static void
-transform_scs(struct tgsi_transform_context *tctx,
-              struct tgsi_full_instruction *inst)
-{
-   struct tgsi_lowering_context *ctx = tgsi_lowering_context(tctx);
-   struct tgsi_full_dst_register *dst = &inst->Dst[0];
-   struct tgsi_full_src_register *src = &inst->Src[0];
-   struct tgsi_full_instruction new_inst;
-
-   if (aliases(dst, TGSI_WRITEMASK_X, src, TGSI_WRITEMASK_X)) {
-      create_mov(tctx, &ctx->tmp[A].dst, src, TGSI_WRITEMASK_X, 0);
-      src = &ctx->tmp[A].src;
-   }
-
-   if (dst->Register.WriteMask & TGSI_WRITEMASK_X) {
-      /* COS dst.x, src.x */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_COS;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_X);
-      new_inst.Instruction.NumSrcRegs = 1;
-      reg_src(&new_inst.Src[0], src, SWIZ(X, _, _, _));
-      tctx->emit_instruction(tctx, &new_inst);
-   }
-
-   if (dst->Register.WriteMask & TGSI_WRITEMASK_Y) {
-      /* SIN dst.y, src.x */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_SIN;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_Y);
-      new_inst.Instruction.NumSrcRegs = 1;
-      reg_src(&new_inst.Src[0], src, SWIZ(X, _, _, _));
-      tctx->emit_instruction(tctx, &new_inst);
-   }
-
-   if (dst->Register.WriteMask & TGSI_WRITEMASK_ZW) {
-      /* MOV dst.zw, imm{0.0, 1.0} */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_MOV;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_ZW);
-      new_inst.Instruction.NumSrcRegs = 1;
-      reg_src(&new_inst.Src[0], &ctx->imm, SWIZ(_, _, X, Y));
-      tctx->emit_instruction(tctx, &new_inst);
-   }
-}
-
 /* LRP - Linear Interpolate
  *  dst.x = src0.x \times src1.x + (1.0 - src0.x) \times src2.x
  *  dst.y = src0.y \times src1.y + (1.0 - src0.y) \times src2.y
  *  dst.z = src0.z \times src1.z + (1.0 - src0.z) \times src2.z
  *  dst.w = src0.w \times src1.w + (1.0 - src0.w) \times src2.w
  *
- * ; needs: 2 tmp, imm{1.0}
- * MUL tmpA, src0, src1
- * SUB tmpB, imm{1.0}, src0
- * MUL tmpB, tmpB, src2
- * ADD dst, tmpA, tmpB
+ * This becomes: src0 \times src1 + src2 - src0 \times src2, which
+ * can then become: src0 \times src1 - (src0 \times src2 - src2)
+ *
+ * ; needs: 1 tmp
+ * MAD tmpA, src0, src2, -src2
+ * MAD dst, src0, src1, -tmpA
  */
-#define LRP_GROW (NINST(2) + NINST(2) + NINST(2) + NINST(2) - OINST(3))
-#define LRP_TMP  2
+#define LRP_GROW (NINST(3) + NINST(3) - OINST(3))
+#define LRP_TMP  1
 static void
 transform_lrp(struct tgsi_transform_context *tctx,
               struct tgsi_full_instruction *inst)
@@ -417,44 +285,28 @@ transform_lrp(struct tgsi_transform_context *tctx,
    struct tgsi_full_instruction new_inst;
 
    if (dst->Register.WriteMask & TGSI_WRITEMASK_XYZW) {
-      /* MUL tmpA, src0, src1 */
+      /* MAD tmpA, src0, src2, -src2 */
       new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_MUL;
+      new_inst.Instruction.Opcode = TGSI_OPCODE_MAD;
       new_inst.Instruction.NumDstRegs = 1;
       reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_XYZW);
-      new_inst.Instruction.NumSrcRegs = 2;
+      new_inst.Instruction.NumSrcRegs = 3;
       reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
-      reg_src(&new_inst.Src[1], src1, SWIZ(X, Y, Z, W));
-      tctx->emit_instruction(tctx, &new_inst);
-
-      /* SUB tmpB, imm{1.0}, src0 */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_SUB;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], &ctx->tmp[B].dst, TGSI_WRITEMASK_XYZW);
-      new_inst.Instruction.NumSrcRegs = 2;
-      reg_src(&new_inst.Src[0], &ctx->imm, SWIZ(Y, Y, Y, Y));
-      reg_src(&new_inst.Src[1], src0, SWIZ(X, Y, Z, W));
-      tctx->emit_instruction(tctx, &new_inst);
-
-      /* MUL tmpB, tmpB, src2 */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_MUL;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], &ctx->tmp[B].dst, TGSI_WRITEMASK_XYZW);
-      new_inst.Instruction.NumSrcRegs = 2;
-      reg_src(&new_inst.Src[0], &ctx->tmp[B].src, SWIZ(X, Y, Z, W));
       reg_src(&new_inst.Src[1], src2, SWIZ(X, Y, Z, W));
+      reg_src(&new_inst.Src[2], src2, SWIZ(X, Y, Z, W));
+      new_inst.Src[2].Register.Negate = !new_inst.Src[2].Register.Negate;
       tctx->emit_instruction(tctx, &new_inst);
 
-      /* ADD dst, tmpA, tmpB */
+      /* MAD dst, src0, src1, -tmpA */
       new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
+      new_inst.Instruction.Opcode = TGSI_OPCODE_MAD;
       new_inst.Instruction.NumDstRegs = 1;
       reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_XYZW);
-      new_inst.Instruction.NumSrcRegs = 2;
-      reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
-      reg_src(&new_inst.Src[1], &ctx->tmp[B].src, SWIZ(X, Y, Z, W));
+      new_inst.Instruction.NumSrcRegs = 3;
+      reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+      reg_src(&new_inst.Src[1], src1, SWIZ(X, Y, Z, W));
+      reg_src(&new_inst.Src[2], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
+      new_inst.Src[2].Register.Negate = true;
       tctx->emit_instruction(tctx, &new_inst);
    }
 }
@@ -492,12 +344,13 @@ transform_frc(struct tgsi_transform_context *tctx,
 
       /* SUB dst, src, tmpA */
       new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_SUB;
+      new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
       new_inst.Instruction.NumDstRegs = 1;
       reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_XYZW);
       new_inst.Instruction.NumSrcRegs = 2;
       reg_src(&new_inst.Src[0], src, SWIZ(X, Y, Z, W));
       reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
+      new_inst.Src[1].Register.Negate = 1;
       tctx->emit_instruction(tctx, &new_inst);
    }
 }
@@ -595,16 +448,25 @@ transform_lit(struct tgsi_transform_context *tctx,
       reg_src(&new_inst.Src[1], &ctx->imm, SWIZ(X, X, _, _));
       tctx->emit_instruction(tctx, &new_inst);
 
-      /* CLAMP tmpA.z, src.w, -imm{128.0}, imm{128.0} */
+      /* MIN tmpA.z, src.w, imm{128.0} */
       new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_CLAMP;
+      new_inst.Instruction.Opcode = TGSI_OPCODE_MIN;
       new_inst.Instruction.NumDstRegs = 1;
       reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_Z);
-      new_inst.Instruction.NumSrcRegs = 3;
+      new_inst.Instruction.NumSrcRegs = 2;
       reg_src(&new_inst.Src[0], src, SWIZ(_, _, W, _));
       reg_src(&new_inst.Src[1], &ctx->imm, SWIZ(_, _, Z, _));
+      tctx->emit_instruction(tctx, &new_inst);
+
+      /* MAX tmpA.z, tmpA.z, -imm{128.0} */
+      new_inst = tgsi_default_full_instruction();
+      new_inst.Instruction.Opcode = TGSI_OPCODE_MAX;
+      new_inst.Instruction.NumDstRegs = 1;
+      reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_Z);
+      new_inst.Instruction.NumSrcRegs = 2;
+      reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(_, _, Z, _));
+      reg_src(&new_inst.Src[1], &ctx->imm, SWIZ(_, _, Z, _));
       new_inst.Src[1].Register.Negate = true;
-      reg_src(&new_inst.Src[2], &ctx->imm, SWIZ(_, _, Z, _));
       tctx->emit_instruction(tctx, &new_inst);
 
       /* LG2 tmpA.y, tmpA.y */
@@ -676,14 +538,19 @@ transform_lit(struct tgsi_transform_context *tctx,
  *  dst.w = 1.0
  *
  * ; needs: 1 tmp, imm{1.0}
- * FLR tmpA.x, src.x
+ * if (lowering FLR) {
+ *   FRC tmpA.x, src.x
+ *   SUB tmpA.x, src.x, tmpA.x
+ * } else {
+ *   FLR tmpA.x, src.x
+ * }
  * EX2 tmpA.y, src.x
  * SUB dst.y, src.x, tmpA.x
  * EX2 dst.x, tmpA.x
  * MOV dst.z, tmpA.y
  * MOV dst.w, imm{1.0}
  */
-#define EXP_GROW (NINST(1) + NINST(1) + NINST(2) + NINST(1) + \
+#define EXP_GROW (NINST(1) + NINST(2) + NINST(1) + NINST(2) + NINST(1) + \
 		NINST(1)+ NINST(1) - OINST(1))
 #define EXP_TMP  1
 static void
@@ -696,14 +563,36 @@ transform_exp(struct tgsi_transform_context *tctx,
    struct tgsi_full_instruction new_inst;
 
    if (dst->Register.WriteMask & TGSI_WRITEMASK_XY) {
-      /* FLR tmpA.x, src.x */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_FLR;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_X);
-      new_inst.Instruction.NumSrcRegs = 1;
-      reg_src(&new_inst.Src[0], src, SWIZ(X, _, _, _));
-      tctx->emit_instruction(tctx, &new_inst);
+      if (ctx->config->lower_FLR) {
+         /* FRC tmpA.x, src.x */
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_FRC;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_X);
+         new_inst.Instruction.NumSrcRegs = 1;
+         reg_src(&new_inst.Src[0], src, SWIZ(X, _, _, _));
+         tctx->emit_instruction(tctx, &new_inst);
+
+         /* SUB tmpA.x, src.x, tmpA.x */
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_X);
+         new_inst.Instruction.NumSrcRegs = 2;
+         reg_src(&new_inst.Src[0], src, SWIZ(X, _, _, _));
+         reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, _, _, _));
+         new_inst.Src[1].Register.Negate = 1;
+         tctx->emit_instruction(tctx, &new_inst);
+     } else {
+         /* FLR tmpA.x, src.x */
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_FLR;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_X);
+         new_inst.Instruction.NumSrcRegs = 1;
+         reg_src(&new_inst.Src[0], src, SWIZ(X, _, _, _));
+         tctx->emit_instruction(tctx, &new_inst);
+      }
    }
 
    if (dst->Register.WriteMask & TGSI_WRITEMASK_Z) {
@@ -720,12 +609,13 @@ transform_exp(struct tgsi_transform_context *tctx,
    if (dst->Register.WriteMask & TGSI_WRITEMASK_Y) {
       /* SUB dst.y, src.x, tmpA.x */
       new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_SUB;
+      new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
       new_inst.Instruction.NumDstRegs = 1;
       reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_Y);
       new_inst.Instruction.NumSrcRegs = 2;
       reg_src(&new_inst.Src[0], src, SWIZ(_, X, _, _));
       reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(_, X, _, _));
+      new_inst.Src[1].Register.Negate = 1;
       tctx->emit_instruction(tctx, &new_inst);
    }
 
@@ -771,14 +661,19 @@ transform_exp(struct tgsi_transform_context *tctx,
  *
  * ; needs: 1 tmp, imm{1.0}
  * LG2 tmpA.x, |src.x|
- * FLR tmpA.y, tmpA.x
+ * if (lowering FLR) {
+ *   FRC tmpA.y, tmpA.x
+ *   SUB tmpA.y, tmpA.x, tmpA.y
+ * } else {
+ *   FLR tmpA.y, tmpA.x
+ * }
  * EX2 tmpA.z, tmpA.y
  * RCP tmpA.z, tmpA.z
  * MUL dst.y, |src.x|, tmpA.z
  * MOV dst.xz, tmpA.yx
  * MOV dst.w, imm{1.0}
  */
-#define LOG_GROW (NINST(1) + NINST(1) + NINST(1) + NINST(1) + \
+#define LOG_GROW (NINST(1) + NINST(1) + NINST(2) + NINST(1) + NINST(1) + \
 		NINST(2) + NINST(1) + NINST(1) - OINST(1))
 #define LOG_TMP  1
 static void
@@ -803,14 +698,36 @@ transform_log(struct tgsi_transform_context *tctx,
    }
 
    if (dst->Register.WriteMask & TGSI_WRITEMASK_XY) {
-      /* FLR tmpA.y, tmpA.x */
-      new_inst = tgsi_default_full_instruction();
-      new_inst.Instruction.Opcode = TGSI_OPCODE_FLR;
-      new_inst.Instruction.NumDstRegs = 1;
-      reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_Y);
-      new_inst.Instruction.NumSrcRegs = 1;
-      reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(_, X, _, _));
-      tctx->emit_instruction(tctx, &new_inst);
+      if (ctx->config->lower_FLR) {
+         /* FRC tmpA.y, tmpA.x */
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_FRC;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_Y);
+         new_inst.Instruction.NumSrcRegs = 1;
+         reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(_, X, _, _));
+         tctx->emit_instruction(tctx, &new_inst);
+
+         /* SUB tmpA.y, tmpA.x, tmpA.y */
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_Y);
+         new_inst.Instruction.NumSrcRegs = 2;
+         reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(_, X, _, _));
+         reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(_, Y, _, _));
+         new_inst.Src[1].Register.Negate = 1;
+         tctx->emit_instruction(tctx, &new_inst);
+      } else {
+         /* FLR tmpA.y, tmpA.x */
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_FLR;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_Y);
+         new_inst.Instruction.NumSrcRegs = 1;
+         reg_src(&new_inst.Src[0], &ctx->tmp[A].src, SWIZ(_, X, _, _));
+         tctx->emit_instruction(tctx, &new_inst);
+      }
    }
 
    if (dst->Register.WriteMask & TGSI_WRITEMASK_Y) {
@@ -873,41 +790,29 @@ transform_log(struct tgsi_transform_context *tctx,
  * DP3 - 3-component Dot Product
  *   dst = src0.x \times src1.x + src0.y \times src1.y + src0.z \times src1.z
  *
- * DPH - Homogeneous Dot Product
- *   dst = src0.x \times src1.x + src0.y \times src1.y + src0.z \times src1.z + src1.w
- *
  * DP2 - 2-component Dot Product
  *   dst = src0.x \times src1.x + src0.y \times src1.y
- *
- * DP2A - 2-component Dot Product And Add
- *   dst = src0.x \times src1.x + src0.y \times src1.y + src2.x
  *
  * NOTE: these are translated into sequence of MUL/MAD(/ADD) scalar
  * operations, which is what you'd prefer for a ISA that is natively
  * scalar.  Probably a native vector ISA would at least already have
  * DP4/DP3 instructions, but perhaps there is room for an alternative
- * translation for DPH/DP2/DP2A using vector instructions.
+ * translation for DP2 using vector instructions.
  *
  * ; needs: 1 tmp
  * MUL tmpA.x, src0.x, src1.x
  * MAD tmpA.x, src0.y, src1.y, tmpA.x
- * if (DPH || DP3 || DP4) {
+ * if (DP3 || DP4) {
  *   MAD tmpA.x, src0.z, src1.z, tmpA.x
- *   if (DPH) {
- *     ADD tmpA.x, src1.w, tmpA.x
- *   } else if (DP4) {
+ *   if (DP4) {
  *     MAD tmpA.x, src0.w, src1.w, tmpA.x
  *   }
- * } else if (DP2A) {
- *   ADD tmpA.x, src2.x, tmpA.x
  * }
  * ; fixup last instruction to replicate into dst
  */
 #define DP4_GROW  (NINST(2) + NINST(3) + NINST(3) + NINST(3) - OINST(2))
 #define DP3_GROW  (NINST(2) + NINST(3) + NINST(3) - OINST(2))
-#define DPH_GROW  (NINST(2) + NINST(3) + NINST(3) + NINST(2) - OINST(2))
 #define DP2_GROW  (NINST(2) + NINST(3) - OINST(2))
-#define DP2A_GROW (NINST(2) + NINST(3) + NINST(2) - OINST(3))
 #define DOTP_TMP  1
 static void
 transform_dotp(struct tgsi_transform_context *tctx,
@@ -917,9 +822,8 @@ transform_dotp(struct tgsi_transform_context *tctx,
    struct tgsi_full_dst_register *dst  = &inst->Dst[0];
    struct tgsi_full_src_register *src0 = &inst->Src[0];
    struct tgsi_full_src_register *src1 = &inst->Src[1];
-   struct tgsi_full_src_register *src2 = &inst->Src[2]; /* only DP2A */
    struct tgsi_full_instruction new_inst;
-   unsigned opcode = inst->Instruction.Opcode;
+   enum tgsi_opcode opcode = inst->Instruction.Opcode;
 
    /* NOTE: any potential last instruction must replicate src on all
     * components (since it could be re-written to write to final dst)
@@ -946,8 +850,7 @@ transform_dotp(struct tgsi_transform_context *tctx,
       reg_src(&new_inst.Src[1], src1, SWIZ(Y, Y, Y, Y));
       reg_src(&new_inst.Src[2], &ctx->tmp[A].src, SWIZ(X, X, X, X));
 
-      if ((opcode == TGSI_OPCODE_DPH) ||
-          (opcode == TGSI_OPCODE_DP3) ||
+      if ((opcode == TGSI_OPCODE_DP3) ||
           (opcode == TGSI_OPCODE_DP4)) {
          tctx->emit_instruction(tctx, &new_inst);
 
@@ -961,18 +864,7 @@ transform_dotp(struct tgsi_transform_context *tctx,
          reg_src(&new_inst.Src[1], src1, SWIZ(Z, Z, Z, Z));
          reg_src(&new_inst.Src[2], &ctx->tmp[A].src, SWIZ(X, X, X, X));
 
-         if (opcode == TGSI_OPCODE_DPH) {
-            tctx->emit_instruction(tctx, &new_inst);
-
-            /* ADD tmpA.x, src1.w, tmpA.x */
-            new_inst = tgsi_default_full_instruction();
-            new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
-            new_inst.Instruction.NumDstRegs = 1;
-            reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_X);
-            new_inst.Instruction.NumSrcRegs = 2;
-            reg_src(&new_inst.Src[0], src1, SWIZ(W, W, W, W));
-            reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, X, X, X));
-         } else if (opcode == TGSI_OPCODE_DP4) {
+         if (opcode == TGSI_OPCODE_DP4) {
             tctx->emit_instruction(tctx, &new_inst);
 
             /* MAD tmpA.x, src0.w, src1.w, tmpA.x */
@@ -985,22 +877,136 @@ transform_dotp(struct tgsi_transform_context *tctx,
             reg_src(&new_inst.Src[1], src1, SWIZ(W, W, W, W));
             reg_src(&new_inst.Src[2], &ctx->tmp[A].src, SWIZ(X, X, X, X));
          }
-      } else if (opcode == TGSI_OPCODE_DP2A) {
-         tctx->emit_instruction(tctx, &new_inst);
-
-         /* ADD tmpA.x, src2.x, tmpA.x */
-         new_inst = tgsi_default_full_instruction();
-         new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
-         new_inst.Instruction.NumDstRegs = 1;
-         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_X);
-         new_inst.Instruction.NumSrcRegs = 2;
-         reg_src(&new_inst.Src[0], src2, SWIZ(X, X, X, X));
-         reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, X, X, X));
       }
 
       /* fixup last instruction to write to dst: */
       reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_XYZW);
 
+      tctx->emit_instruction(tctx, &new_inst);
+   }
+}
+
+/* FLR - floor, CEIL - ceil
+ * ; needs: 1 tmp
+ * if (CEIL) {
+ *   FRC tmpA, -src
+ *   ADD dst, src, tmpA
+ * } else {
+ *   FRC tmpA, src
+ *   SUB dst, src, tmpA
+ * }
+ */
+#define FLR_GROW (NINST(1) + NINST(2) - OINST(1))
+#define CEIL_GROW (NINST(1) + NINST(2) - OINST(1))
+#define FLR_TMP 1
+#define CEIL_TMP 1
+static void
+transform_flr_ceil(struct tgsi_transform_context *tctx,
+                   struct tgsi_full_instruction *inst)
+{
+   struct tgsi_lowering_context *ctx = tgsi_lowering_context(tctx);
+   struct tgsi_full_dst_register *dst  = &inst->Dst[0];
+   struct tgsi_full_src_register *src0 = &inst->Src[0];
+   struct tgsi_full_instruction new_inst;
+   enum tgsi_opcode opcode = inst->Instruction.Opcode;
+
+   if (dst->Register.WriteMask & TGSI_WRITEMASK_XYZW) {
+      /* FLR: FRC tmpA, src  CEIL: FRC tmpA, -src */
+      new_inst = tgsi_default_full_instruction();
+      new_inst.Instruction.Opcode = TGSI_OPCODE_FRC;
+      new_inst.Instruction.NumDstRegs = 1;
+      reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_XYZW);
+      new_inst.Instruction.NumSrcRegs = 1;
+      reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+
+      if (opcode == TGSI_OPCODE_CEIL)
+         new_inst.Src[0].Register.Negate = !new_inst.Src[0].Register.Negate;
+      tctx->emit_instruction(tctx, &new_inst);
+
+      /* FLR: SUB dst, src, tmpA  CEIL: ADD dst, src, tmpA */
+      new_inst = tgsi_default_full_instruction();
+      new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
+      new_inst.Instruction.NumDstRegs = 1;
+      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_XYZW);
+      new_inst.Instruction.NumSrcRegs = 2;
+      reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+      reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
+      if (opcode == TGSI_OPCODE_FLR)
+         new_inst.Src[1].Register.Negate = 1;
+      tctx->emit_instruction(tctx, &new_inst);
+   }
+}
+
+/* TRUNC - truncate off fractional part
+ *  dst.x = trunc(src.x)
+ *  dst.y = trunc(src.y)
+ *  dst.z = trunc(src.z)
+ *  dst.w = trunc(src.w)
+ *
+ * ; needs: 1 tmp
+ * if (lower FLR) {
+ *   FRC tmpA, |src|
+ *   SUB tmpA, |src|, tmpA
+ * } else {
+ *   FLR tmpA, |src|
+ * }
+ * CMP dst, src, -tmpA, tmpA
+ */
+#define TRUNC_GROW (NINST(1) + NINST(2) + NINST(3) - OINST(1))
+#define TRUNC_TMP 1
+static void
+transform_trunc(struct tgsi_transform_context *tctx,
+                struct tgsi_full_instruction *inst)
+{
+   struct tgsi_lowering_context *ctx = tgsi_lowering_context(tctx);
+   struct tgsi_full_dst_register *dst  = &inst->Dst[0];
+   struct tgsi_full_src_register *src0 = &inst->Src[0];
+   struct tgsi_full_instruction new_inst;
+
+   if (dst->Register.WriteMask & TGSI_WRITEMASK_XYZW) {
+      if (ctx->config->lower_FLR) {
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_FRC;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_XYZW);
+         new_inst.Instruction.NumSrcRegs = 1;
+         reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+         new_inst.Src[0].Register.Absolute = true;
+         new_inst.Src[0].Register.Negate = false;
+         tctx->emit_instruction(tctx, &new_inst);
+
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_ADD;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_XYZW);
+         new_inst.Instruction.NumSrcRegs = 2;
+         reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+         new_inst.Src[0].Register.Absolute = true;
+         new_inst.Src[0].Register.Negate = false;
+         reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
+         new_inst.Src[1].Register.Negate = 1;
+         tctx->emit_instruction(tctx, &new_inst);
+      } else {
+         new_inst = tgsi_default_full_instruction();
+         new_inst.Instruction.Opcode = TGSI_OPCODE_FLR;
+         new_inst.Instruction.NumDstRegs = 1;
+         reg_dst(&new_inst.Dst[0], &ctx->tmp[A].dst, TGSI_WRITEMASK_XYZW);
+         new_inst.Instruction.NumSrcRegs = 1;
+         reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+         new_inst.Src[0].Register.Absolute = true;
+         new_inst.Src[0].Register.Negate = false;
+         tctx->emit_instruction(tctx, &new_inst);
+      }
+
+      new_inst = tgsi_default_full_instruction();
+      new_inst.Instruction.Opcode = TGSI_OPCODE_CMP;
+      new_inst.Instruction.NumDstRegs = 1;
+      reg_dst(&new_inst.Dst[0], dst, TGSI_WRITEMASK_XYZW);
+      new_inst.Instruction.NumSrcRegs = 3;
+      reg_src(&new_inst.Src[0], src0, SWIZ(X, Y, Z, W));
+      reg_src(&new_inst.Src[1], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
+      new_inst.Src[1].Register.Negate = true;
+      reg_src(&new_inst.Src[2], &ctx->tmp[A].src, SWIZ(X, Y, Z, W));
       tctx->emit_instruction(tctx, &new_inst);
    }
 }
@@ -1032,7 +1038,7 @@ transform_samp(struct tgsi_transform_context *tctx,
    /* mask is clamped coords, pmask is all coords (for projection): */
    unsigned mask = 0, pmask = 0, smask;
    unsigned tex = inst->Texture.Texture;
-   unsigned opcode = inst->Instruction.Opcode;
+   enum tgsi_opcode opcode = inst->Instruction.Opcode;
    bool lower_txp = (opcode == TGSI_OPCODE_TXP) &&
 		   (ctx->config->lower_TXP & (1 << tex));
 
@@ -1133,8 +1139,7 @@ transform_samp(struct tgsi_transform_context *tctx,
 
    /* MOV_SAT tmpA.<mask>, tmpA */
    if (mask) {
-      create_mov(tctx, &ctx->tmp[A].dst, &ctx->tmp[A].src, mask,
-                 TGSI_SAT_ZERO_ONE);
+      create_mov(tctx, &ctx->tmp[A].dst, &ctx->tmp[A].src, mask, 1);
    }
 
    /* modify the texture samp instruction to take fixed up coord: */
@@ -1152,7 +1157,7 @@ transform_samp(struct tgsi_transform_context *tctx,
  */
 #define TWOSIDE_GROW(n)  (                      \
       2 +         /* FACE */                    \
-      ((n) * 2) + /* IN[] BCOLOR[n] */          \
+      ((n) * 3) + /* IN[], BCOLOR[n], <intrp> */\
       ((n) * 1) + /* TEMP[] */                  \
       ((n) * NINST(3))   /* CMP instr */        \
       )
@@ -1165,20 +1170,24 @@ emit_twoside(struct tgsi_transform_context *tctx)
    struct tgsi_full_declaration decl;
    struct tgsi_full_instruction new_inst;
    unsigned inbase, tmpbase;
-   int i;
+   unsigned i;
 
    inbase  = info->file_max[TGSI_FILE_INPUT] + 1;
    tmpbase = info->file_max[TGSI_FILE_TEMPORARY] + 1;
 
    /* additional inputs for BCOLOR's */
    for (i = 0; i < ctx->two_side_colors; i++) {
+      unsigned in_idx = ctx->two_side_idx[i];
       decl = tgsi_default_full_declaration();
       decl.Declaration.File = TGSI_FILE_INPUT;
       decl.Declaration.Semantic = true;
       decl.Range.First = decl.Range.Last = inbase + i;
       decl.Semantic.Name = TGSI_SEMANTIC_BCOLOR;
-      decl.Semantic.Index =
-         info->input_semantic_index[ctx->two_side_idx[i]];
+      decl.Semantic.Index = info->input_semantic_index[in_idx];
+      decl.Declaration.Interpolate = true;
+      decl.Interp.Interpolate = info->input_interpolate[in_idx];
+      decl.Interp.Location = info->input_interpolate_loc[in_idx];
+      decl.Interp.CylindricalWrap = info->input_cylindrical_wrap[in_idx];
       tctx->emit_declaration(tctx, &decl);
    }
 
@@ -1245,7 +1254,7 @@ emit_decls(struct tgsi_transform_context *tctx)
    struct tgsi_full_declaration decl;
    struct tgsi_full_immediate immed;
    unsigned tmpbase;
-   int i;
+   unsigned i;
 
    tmpbase = info->file_max[TGSI_FILE_TEMPORARY] + 1;
 
@@ -1299,7 +1308,7 @@ rename_color_inputs(struct tgsi_lowering_context *ctx,
       struct tgsi_src_register *src = &inst->Src[i].Register;
       if (src->File == TGSI_FILE_INPUT) {
          for (j = 0; j < ctx->two_side_colors; j++) {
-            if (src->Index == ctx->two_side_idx[j]) {
+	    if (src->Index == (int)ctx->two_side_idx[j]) {
                src->File = TGSI_FILE_TEMPORARY;
                src->Index = ctx->color_base + j;
                break;
@@ -1332,16 +1341,6 @@ transform_instr(struct tgsi_transform_context *tctx,
       if (!ctx->config->lower_DST)
          goto skip;
       transform_dst(tctx, inst);
-      break;
-   case TGSI_OPCODE_XPD:
-      if (!ctx->config->lower_XPD)
-         goto skip;
-      transform_xpd(tctx, inst);
-      break;
-   case TGSI_OPCODE_SCS:
-      if (!ctx->config->lower_SCS)
-         goto skip;
-      transform_scs(tctx, inst);
       break;
    case TGSI_OPCODE_LRP:
       if (!ctx->config->lower_LRP)
@@ -1383,20 +1382,25 @@ transform_instr(struct tgsi_transform_context *tctx,
          goto skip;
       transform_dotp(tctx, inst);
       break;
-   case TGSI_OPCODE_DPH:
-      if (!ctx->config->lower_DPH)
-         goto skip;
-      transform_dotp(tctx, inst);
-      break;
    case TGSI_OPCODE_DP2:
       if (!ctx->config->lower_DP2)
          goto skip;
       transform_dotp(tctx, inst);
       break;
-   case TGSI_OPCODE_DP2A:
-      if (!ctx->config->lower_DP2A)
+   case TGSI_OPCODE_FLR:
+      if (!ctx->config->lower_FLR)
          goto skip;
-      transform_dotp(tctx, inst);
+      transform_flr_ceil(tctx, inst);
+      break;
+   case TGSI_OPCODE_CEIL:
+      if (!ctx->config->lower_CEIL)
+         goto skip;
+      transform_flr_ceil(tctx, inst);
+      break;
+   case TGSI_OPCODE_TRUNC:
+      if (!ctx->config->lower_TRUNC)
+         goto skip;
+      transform_trunc(tctx, inst);
       break;
    case TGSI_OPCODE_TEX:
    case TGSI_OPCODE_TXP:
@@ -1427,7 +1431,11 @@ tgsi_transform_lowering(const struct tgsi_lowering_config *config,
    int newlen, numtmp;
 
    /* sanity check in case limit is ever increased: */
-   assert((sizeof(config->saturate_s) * 8) >= PIPE_MAX_SAMPLERS);
+   STATIC_ASSERT((sizeof(config->saturate_s) * 8) >= PIPE_MAX_SAMPLERS);
+
+   /* sanity check the lowering */
+   assert(!(config->lower_FRC && (config->lower_FLR || config->lower_CEIL)));
+   assert(!(config->lower_FRC && config->lower_TRUNC));
 
    memset(&ctx, 0, sizeof(ctx));
    ctx.base.transform_instruction = transform_instr;
@@ -1440,7 +1448,7 @@ tgsi_transform_lowering(const struct tgsi_lowering_config *config,
     * color, then figure out the number of additional inputs we need
     * to create for BCOLOR's..
     */
-   if ((info->processor == TGSI_PROCESSOR_FRAGMENT) &&
+   if ((info->processor == PIPE_SHADER_FRAGMENT) &&
        config->color_two_side) {
       int i;
       ctx.face_idx = -1;
@@ -1457,8 +1465,6 @@ tgsi_transform_lowering(const struct tgsi_lowering_config *config,
 #define OPCS(x) ((config->lower_ ## x) ? info->opcode_count[TGSI_OPCODE_ ## x] : 0)
    /* if there are no instructions to lower, then we are done: */
    if (!(OPCS(DST) ||
-         OPCS(XPD) ||
-         OPCS(SCS) ||
          OPCS(LRP) ||
          OPCS(FRC) ||
          OPCS(POW) ||
@@ -1467,9 +1473,10 @@ tgsi_transform_lowering(const struct tgsi_lowering_config *config,
          OPCS(LOG) ||
          OPCS(DP4) ||
          OPCS(DP3) ||
-         OPCS(DPH) ||
          OPCS(DP2) ||
-         OPCS(DP2A) ||
+         OPCS(FLR) ||
+         OPCS(CEIL) ||
+         OPCS(TRUNC) ||
          OPCS(TXP) ||
          ctx.two_side_colors ||
          ctx.saturate))
@@ -1485,14 +1492,6 @@ tgsi_transform_lowering(const struct tgsi_lowering_config *config,
    if (OPCS(DST)) {
       newlen += DST_GROW * OPCS(DST);
       numtmp = MAX2(numtmp, DST_TMP);
-   }
-   if (OPCS(XPD)) {
-      newlen += XPD_GROW * OPCS(XPD);
-      numtmp = MAX2(numtmp, XPD_TMP);
-   }
-   if (OPCS(SCS)) {
-      newlen += SCS_GROW * OPCS(SCS);
-      numtmp = MAX2(numtmp, SCS_TMP);
    }
    if (OPCS(LRP)) {
       newlen += LRP_GROW * OPCS(LRP);
@@ -1526,17 +1525,21 @@ tgsi_transform_lowering(const struct tgsi_lowering_config *config,
       newlen += DP3_GROW * OPCS(DP3);
       numtmp = MAX2(numtmp, DOTP_TMP);
    }
-   if (OPCS(DPH)) {
-      newlen += DPH_GROW * OPCS(DPH);
-      numtmp = MAX2(numtmp, DOTP_TMP);
-   }
    if (OPCS(DP2)) {
       newlen += DP2_GROW * OPCS(DP2);
       numtmp = MAX2(numtmp, DOTP_TMP);
    }
-   if (OPCS(DP2A)) {
-      newlen += DP2A_GROW * OPCS(DP2A);
-      numtmp = MAX2(numtmp, DOTP_TMP);
+   if (OPCS(FLR)) {
+      newlen += FLR_GROW * OPCS(FLR);
+      numtmp = MAX2(numtmp, FLR_TMP);
+   }
+   if (OPCS(CEIL)) {
+      newlen += CEIL_GROW * OPCS(CEIL);
+      numtmp = MAX2(numtmp, CEIL_TMP);
+   }
+   if (OPCS(TRUNC)) {
+      newlen += TRUNC_GROW * OPCS(TRUNC);
+      numtmp = MAX2(numtmp, TRUNC_TMP);
    }
    if (ctx.saturate || config->lower_TXP) {
       int n = 0;

@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
  *
@@ -39,7 +37,6 @@ struct fd4_zsa_stateobj {
 	struct pipe_depth_stencil_alpha_state base;
 	uint32_t gras_alpha_control;
 	uint32_t rb_alpha_control;
-	uint32_t rb_render_control;
 	uint32_t rb_depth_control;
 	uint32_t rb_stencil_control;
 	uint32_t rb_stencil_control2;
@@ -47,7 +44,7 @@ struct fd4_zsa_stateobj {
 	uint32_t rb_stencilrefmask_bf;
 };
 
-static INLINE struct fd4_zsa_stateobj *
+static inline struct fd4_zsa_stateobj *
 fd4_zsa_stateobj(struct pipe_depth_stencil_alpha_state *zsa)
 {
 	return (struct fd4_zsa_stateobj *)zsa;

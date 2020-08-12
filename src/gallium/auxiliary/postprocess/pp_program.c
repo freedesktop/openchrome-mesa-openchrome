@@ -91,7 +91,8 @@ pp_init_prog(struct pp_queue_t *ppq, struct pipe_context *pipe,
    p->rasterizer.cull_face = PIPE_FACE_NONE;
    p->rasterizer.half_pixel_center = 1;
    p->rasterizer.bottom_edge_rule = 1;
-   p->rasterizer.depth_clip = 1;
+   p->rasterizer.depth_clip_near = 1;
+   p->rasterizer.depth_clip_far = 1;
 
    p->sampler.wrap_s = p->sampler.wrap_t = p->sampler.wrap_r =
       PIPE_TEX_WRAP_CLAMP_TO_EDGE;
@@ -108,24 +109,25 @@ pp_init_prog(struct pp_queue_t *ppq, struct pipe_context *pipe,
       PIPE_TEX_FILTER_NEAREST;
    p->sampler_point.normalized_coords = 1;
 
-   p->velem[0].src_offset = 0;
-   p->velem[0].instance_divisor = 0;
-   p->velem[0].vertex_buffer_index = 0;
-   p->velem[0].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
-   p->velem[1].src_offset = 1 * 4 * sizeof(float);
-   p->velem[1].instance_divisor = 0;
-   p->velem[1].vertex_buffer_index = 0;
-   p->velem[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+   p->velem.count = 2;
+   p->velem.velems[0].src_offset = 0;
+   p->velem.velems[0].instance_divisor = 0;
+   p->velem.velems[0].vertex_buffer_index = 0;
+   p->velem.velems[0].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+   p->velem.velems[1].src_offset = 1 * 4 * sizeof(float);
+   p->velem.velems[1].instance_divisor = 0;
+   p->velem.velems[1].vertex_buffer_index = 0;
+   p->velem.velems[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
 
    if (!p->screen->is_format_supported(p->screen,
                                        PIPE_FORMAT_R32G32B32A32_FLOAT,
-                                       PIPE_BUFFER, 1,
+                                       PIPE_BUFFER, 1, 1,
                                        PIPE_BIND_VERTEX_BUFFER))
       pp_debug("Vertex buf format fail\n");
 
 
    {
-      const uint semantic_names[] = { TGSI_SEMANTIC_POSITION,
+      const enum tgsi_semantic semantic_names[] = { TGSI_SEMANTIC_POSITION,
          TGSI_SEMANTIC_GENERIC
       };
       const uint semantic_indexes[] = { 0, 0 };

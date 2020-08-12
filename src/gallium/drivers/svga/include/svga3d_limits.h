@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2007-2014 VMware, Inc.  All rights reserved.
+ * Copyright 2007-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -41,6 +41,7 @@
 #define SVGA3D_NUM_CLIPPLANES                   6
 #define SVGA3D_MAX_RENDER_TARGETS               8
 #define SVGA3D_MAX_SIMULTANEOUS_RENDER_TARGETS  (SVGA3D_MAX_RENDER_TARGETS)
+#define SVGA3D_MAX_UAVIEWS                      8
 #define SVGA3D_MAX_CONTEXT_IDS                  256
 #define SVGA3D_MAX_SURFACE_IDS                  (32 * 1024)
 
@@ -56,15 +57,14 @@
 
 #define SVGA3D_NUM_TEXTURE_UNITS                32
 #define SVGA3D_NUM_LIGHTS                       8
-#define SVGA3D_MAX_VIDEODECODERS                8
-#define SVGA3D_MAX_VIDEOPROCESSORS              8
-#define SVGA3D_MAX_VIDEODECODER_FRAMES          400
 
 /*
  * Maximum size in dwords of shader text the SVGA device will allow.
  * Currently 8 MB.
  */
-#define SVGA3D_MAX_SHADER_MEMORY  (8 * 1024 * 1024 / sizeof(uint32))
+#define SVGA3D_MAX_SHADER_MEMORY_BYTES (8 * 1024 * 1024)
+#define SVGA3D_MAX_SHADER_MEMORY  (SVGA3D_MAX_SHADER_MEMORY_BYTES / \
+                                   sizeof(uint32))
 
 #define SVGA3D_MAX_CLIP_PLANES    6
 
@@ -84,7 +84,9 @@
 /*
  * Maximum number of array indexes in a GB surface (with DX enabled).
  */
-#define SVGA3D_MAX_SURFACE_ARRAYSIZE 512
+#define SVGA3D_SM4_MAX_SURFACE_ARRAYSIZE 512
+#define SVGA3D_SM5_MAX_SURFACE_ARRAYSIZE 2048
+#define SVGA3D_MAX_SURFACE_ARRAYSIZE SVGA3D_SM5_MAX_SURFACE_ARRAYSIZE
 
 /*
  * The maximum number of vertex arrays we're guaranteed to support in
@@ -97,5 +99,10 @@
  * in SVGA_3D_CMD_DRAWPRIMITIVES.
  */
 #define SVGA3D_MAX_DRAW_PRIMITIVE_RANGES 32
+
+/*
+ * The maximum number of samples that can be contained in a surface.
+ */
+#define SVGA3D_MAX_SAMPLES 8
 
 #endif // _SVGA3D_LIMITS_H_

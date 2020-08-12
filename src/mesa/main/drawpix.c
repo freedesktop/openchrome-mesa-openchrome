@@ -23,7 +23,7 @@
  */
 
 #include "glheader.h"
-#include "imports.h"
+#include "draw_validate.h"
 #include "bufferobj.h"
 #include "context.h"
 #include "drawpix.h"
@@ -33,9 +33,10 @@
 #include "image.h"
 #include "pbo.h"
 #include "state.h"
-#include "dispatch.h"
 #include "glformats.h"
 #include "fbobject.h"
+#include "util/u_math.h"
+#include "util/rounding.h"
 
 
 /*
@@ -51,14 +52,14 @@ _mesa_DrawPixels( GLsizei width, GLsizei height,
    FLUSH_VERTICES(ctx, 0);
 
    if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDrawPixels(%d, %d, %s, %s, %p) // to %s at %d, %d\n",
+      _mesa_debug(ctx, "glDrawPixels(%d, %d, %s, %s, %p) // to %s at %ld, %ld\n",
                   width, height,
-                  _mesa_lookup_enum_by_nr(format),
-                  _mesa_lookup_enum_by_nr(type),
+                  _mesa_enum_to_string(format),
+                  _mesa_enum_to_string(type),
                   pixels,
-                  _mesa_lookup_enum_by_nr(ctx->DrawBuffer->ColorDrawBuffer[0]),
-                  IROUND(ctx->Current.RasterPos[0]),
-                  IROUND(ctx->Current.RasterPos[1]));
+                  _mesa_enum_to_string(ctx->DrawBuffer->ColorDrawBuffer[0]),
+                  lroundf(ctx->Current.RasterPos[0]),
+                  lroundf(ctx->Current.RasterPos[1]));
 
 
    if (width < 0 || height < 0) {
@@ -96,8 +97,8 @@ _mesa_DrawPixels( GLsizei width, GLsizei height,
    err = _mesa_error_check_format_and_type(ctx, format, type);
    if (err != GL_NO_ERROR) {
       _mesa_error(ctx, err, "glDrawPixels(invalid format %s and/or type %s)",
-                  _mesa_lookup_enum_by_nr(format),
-                  _mesa_lookup_enum_by_nr(type));
+                  _mesa_enum_to_string(format),
+                  _mesa_enum_to_string(type));
       goto end;
    }
 
@@ -140,10 +141,10 @@ _mesa_DrawPixels( GLsizei width, GLsizei height,
    if (ctx->RenderMode == GL_RENDER) {
       if (width > 0 && height > 0) {
          /* Round, to satisfy conformance tests (matches SGI's OpenGL) */
-         GLint x = IROUND(ctx->Current.RasterPos[0]);
-         GLint y = IROUND(ctx->Current.RasterPos[1]);
+         GLint x = lroundf(ctx->Current.RasterPos[0]);
+         GLint y = lroundf(ctx->Current.RasterPos[1]);
 
-         if (_mesa_is_bufferobj(ctx->Unpack.BufferObj)) {
+         if (ctx->Unpack.BufferObj) {
             /* unpack from PBO */
             if (!_mesa_validate_pbo_access(2, &ctx->Unpack, width, height,
                                            1, format, type, INT_MAX, pixels)) {
@@ -173,7 +174,7 @@ _mesa_DrawPixels( GLsizei width, GLsizei height,
                              ctx->Current.RasterTexCoords[0] );
    }
    else {
-      ASSERT(ctx->RenderMode == GL_SELECT);
+      assert(ctx->RenderMode == GL_SELECT);
       /* Do nothing.  See OpenGL Spec, Appendix B, Corollary 6. */
    }
 
@@ -196,13 +197,13 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
 
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx,
-                  "glCopyPixels(%d, %d, %d, %d, %s) // from %s to %s at %d, %d\n",
+                  "glCopyPixels(%d, %d, %d, %d, %s) // from %s to %s at %ld, %ld\n",
                   srcx, srcy, width, height,
-                  _mesa_lookup_enum_by_nr(type),
-                  _mesa_lookup_enum_by_nr(ctx->ReadBuffer->ColorReadBuffer),
-                  _mesa_lookup_enum_by_nr(ctx->DrawBuffer->ColorDrawBuffer[0]),
-                  IROUND(ctx->Current.RasterPos[0]),
-                  IROUND(ctx->Current.RasterPos[1]));
+                  _mesa_enum_to_string(type),
+                  _mesa_enum_to_string(ctx->ReadBuffer->ColorReadBuffer),
+                  _mesa_enum_to_string(ctx->DrawBuffer->ColorDrawBuffer[0]),
+                  lroundf(ctx->Current.RasterPos[0]),
+                  lroundf(ctx->Current.RasterPos[1]));
 
    if (width < 0 || height < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE, "glCopyPixels(width or height < 0)");
@@ -218,7 +219,7 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
        type != GL_STENCIL &&
        type != GL_DEPTH_STENCIL) {
       _mesa_error(ctx, GL_INVALID_ENUM, "glCopyPixels(type=%s)",
-                  _mesa_lookup_enum_by_nr(type));
+                  _mesa_enum_to_string(type));
       return;
    }
 
@@ -264,8 +265,8 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
    if (ctx->RenderMode == GL_RENDER) {
       /* Round to satisfy conformance tests (matches SGI's OpenGL) */
       if (width > 0 && height > 0) {
-         GLint destx = IROUND(ctx->Current.RasterPos[0]);
-         GLint desty = IROUND(ctx->Current.RasterPos[1]);
+         GLint destx = lroundf(ctx->Current.RasterPos[0]);
+         GLint desty = lroundf(ctx->Current.RasterPos[1]);
          ctx->Driver.CopyPixels( ctx, srcx, srcy, width, height, destx, desty,
                                  type );
       }
@@ -273,13 +274,13 @@ _mesa_CopyPixels( GLint srcx, GLint srcy, GLsizei width, GLsizei height,
    else if (ctx->RenderMode == GL_FEEDBACK) {
       FLUSH_CURRENT( ctx, 0 );
       _mesa_feedback_token( ctx, (GLfloat) (GLint) GL_COPY_PIXEL_TOKEN );
-      _mesa_feedback_vertex( ctx, 
+      _mesa_feedback_vertex( ctx,
                              ctx->Current.RasterPos,
                              ctx->Current.RasterColor,
                              ctx->Current.RasterTexCoords[0] );
    }
    else {
-      ASSERT(ctx->RenderMode == GL_SELECT);
+      assert(ctx->RenderMode == GL_SELECT);
       /* Do nothing.  See OpenGL Spec, Appendix B, Corollary 6. */
    }
 
@@ -323,10 +324,10 @@ _mesa_Bitmap( GLsizei width, GLsizei height,
       /* Truncate, to satisfy conformance tests (matches SGI's OpenGL). */
       if (width > 0 && height > 0) {
          const GLfloat epsilon = 0.0001F;
-         GLint x = IFLOOR(ctx->Current.RasterPos[0] + epsilon - xorig);
-         GLint y = IFLOOR(ctx->Current.RasterPos[1] + epsilon - yorig);
+         GLint x = util_ifloor(ctx->Current.RasterPos[0] + epsilon - xorig);
+         GLint y = util_ifloor(ctx->Current.RasterPos[1] + epsilon - yorig);
 
-         if (_mesa_is_bufferobj(ctx->Unpack.BufferObj)) {
+         if (ctx->Unpack.BufferObj) {
             /* unpack from PBO */
             if (!_mesa_validate_pbo_access(2, &ctx->Unpack, width, height,
                                            1, GL_COLOR_INDEX, GL_BITMAP,
@@ -355,7 +356,7 @@ _mesa_Bitmap( GLsizei width, GLsizei height,
                              ctx->Current.RasterTexCoords[0] );
    }
    else {
-      ASSERT(ctx->RenderMode == GL_SELECT);
+      assert(ctx->RenderMode == GL_SELECT);
       /* Do nothing.  See OpenGL Spec, Appendix B, Corollary 6. */
    }
 

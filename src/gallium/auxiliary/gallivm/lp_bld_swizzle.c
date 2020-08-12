@@ -222,7 +222,7 @@ lp_build_swizzle_scalar_aos(struct lp_build_context *bld,
        *                        XX XX XX XX if shift right (shift == -1)
        *
        */
-#ifdef PIPE_ARCH_LITTLE_ENDIAN
+#if UTIL_ARCH_LITTLE_ENDIAN
       shift = channel == 0 ? 1 : -1;
 #else
       shift = channel == 0 ? -1 : 1;
@@ -293,7 +293,7 @@ lp_build_swizzle_scalar_aos(struct lp_build_context *bld,
          int shift = shifts[channel][i];
 
          /* See endianness diagram above */
-#ifdef PIPE_ARCH_BIG_ENDIAN
+#if UTIL_ARCH_BIG_ENDIAN
          shift = -shift;
 #endif
 
@@ -361,10 +361,10 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
    const unsigned n = type.length;
    unsigned i, j;
 
-   if (swizzles[0] == PIPE_SWIZZLE_RED &&
-       swizzles[1] == PIPE_SWIZZLE_GREEN &&
-       swizzles[2] == PIPE_SWIZZLE_BLUE &&
-       swizzles[3] == PIPE_SWIZZLE_ALPHA) {
+   if (swizzles[0] == PIPE_SWIZZLE_X &&
+       swizzles[1] == PIPE_SWIZZLE_Y &&
+       swizzles[2] == PIPE_SWIZZLE_Z &&
+       swizzles[3] == PIPE_SWIZZLE_W) {
       return a;
    }
 
@@ -372,14 +372,14 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
        swizzles[1] == swizzles[2] &&
        swizzles[2] == swizzles[3]) {
       switch (swizzles[0]) {
-      case PIPE_SWIZZLE_RED:
-      case PIPE_SWIZZLE_GREEN:
-      case PIPE_SWIZZLE_BLUE:
-      case PIPE_SWIZZLE_ALPHA:
+      case PIPE_SWIZZLE_X:
+      case PIPE_SWIZZLE_Y:
+      case PIPE_SWIZZLE_Z:
+      case PIPE_SWIZZLE_W:
          return lp_build_swizzle_scalar_aos(bld, a, swizzles[0], 4);
-      case PIPE_SWIZZLE_ZERO:
+      case PIPE_SWIZZLE_0:
          return bld->zero;
-      case PIPE_SWIZZLE_ONE:
+      case PIPE_SWIZZLE_1:
          return bld->one;
       case LP_BLD_SWIZZLE_DONTCARE:
          return bld->undef;
@@ -408,21 +408,21 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
             default:
                assert(0);
                /* fall through */
-            case PIPE_SWIZZLE_RED:
-            case PIPE_SWIZZLE_GREEN:
-            case PIPE_SWIZZLE_BLUE:
-            case PIPE_SWIZZLE_ALPHA:
+            case PIPE_SWIZZLE_X:
+            case PIPE_SWIZZLE_Y:
+            case PIPE_SWIZZLE_Z:
+            case PIPE_SWIZZLE_W:
                shuffle = j + swizzles[i];
                shuffles[j + i] = LLVMConstInt(i32t, shuffle, 0);
                break;
-            case PIPE_SWIZZLE_ZERO:
+            case PIPE_SWIZZLE_0:
                shuffle = type.length + 0;
                shuffles[j + i] = LLVMConstInt(i32t, shuffle, 0);
                if (!aux[0]) {
                   aux[0] = lp_build_const_elem(bld->gallivm, type, 0.0);
                }
                break;
-            case PIPE_SWIZZLE_ONE:
+            case PIPE_SWIZZLE_1:
                shuffle = type.length + 1;
                shuffles[j + i] = LLVMConstInt(i32t, shuffle, 0);
                if (!aux[1]) {
@@ -467,14 +467,14 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
       LLVMValueRef res;
       struct lp_type type4;
       unsigned cond = 0;
-      unsigned chan;
+      int chan;
       int shift;
 
       /*
        * Start with a mixture of 1 and 0.
        */
       for (chan = 0; chan < 4; ++chan) {
-         if (swizzles[chan] == PIPE_SWIZZLE_ONE) {
+         if (swizzles[chan] == PIPE_SWIZZLE_1) {
             cond |= 1 << chan;
          }
       }
@@ -519,7 +519,7 @@ lp_build_swizzle_aos(struct lp_build_context *bld,
          for (chan = 0; chan < 4; ++chan) {
             if (swizzles[chan] < 4) {
                /* We need to move channel swizzles[chan] into channel chan */
-#ifdef PIPE_ARCH_LITTLE_ENDIAN
+#if UTIL_ARCH_LITTLE_ENDIAN
                if (swizzles[chan] - chan == -shift) {
                   mask |= ((1ULL << type.width) - 1) << (swizzles[chan] * type.width);
                }
@@ -574,14 +574,14 @@ lp_build_swizzle_soa_channel(struct lp_build_context *bld,
                              unsigned swizzle)
 {
    switch (swizzle) {
-   case PIPE_SWIZZLE_RED:
-   case PIPE_SWIZZLE_GREEN:
-   case PIPE_SWIZZLE_BLUE:
-   case PIPE_SWIZZLE_ALPHA:
+   case PIPE_SWIZZLE_X:
+   case PIPE_SWIZZLE_Y:
+   case PIPE_SWIZZLE_Z:
+   case PIPE_SWIZZLE_W:
       return unswizzled[swizzle];
-   case PIPE_SWIZZLE_ZERO:
+   case PIPE_SWIZZLE_0:
       return bld->zero;
-   case PIPE_SWIZZLE_ONE:
+   case PIPE_SWIZZLE_1:
       return bld->one;
    default:
       assert(0);
@@ -652,7 +652,7 @@ lp_build_transpose_aos(struct gallivm_state *gallivm,
    struct lp_type double_type_lp = single_type_lp;
    LLVMTypeRef single_type;
    LLVMTypeRef double_type;
-   LLVMValueRef t0, t1, t2, t3;
+   LLVMValueRef t0 = NULL, t1 = NULL, t2 = NULL, t3 = NULL;
 
    double_type_lp.length >>= 1;
    double_type_lp.width  <<= 1;
@@ -660,17 +660,45 @@ lp_build_transpose_aos(struct gallivm_state *gallivm,
    double_type = lp_build_vec_type(gallivm, double_type_lp);
    single_type = lp_build_vec_type(gallivm, single_type_lp);
 
+   LLVMValueRef double_type_zero = LLVMConstNull(double_type);
    /* Interleave x, y, z, w -> xy and zw */
-   t0 = lp_build_interleave2_half(gallivm, single_type_lp, src[0], src[1], 0);
-   t1 = lp_build_interleave2_half(gallivm, single_type_lp, src[2], src[3], 0);
-   t2 = lp_build_interleave2_half(gallivm, single_type_lp, src[0], src[1], 1);
-   t3 = lp_build_interleave2_half(gallivm, single_type_lp, src[2], src[3], 1);
+   if (src[0] || src[1]) {
+      LLVMValueRef src0 = src[0];
+      LLVMValueRef src1 = src[1];
+      if (!src0)
+         src0 = LLVMConstNull(single_type);
+      if (!src1)
+         src1 = LLVMConstNull(single_type);
+      t0 = lp_build_interleave2_half(gallivm, single_type_lp, src0, src1, 0);
+      t2 = lp_build_interleave2_half(gallivm, single_type_lp, src0, src1, 1);
 
-   /* Cast to double width type for second interleave */
-   t0 = LLVMBuildBitCast(gallivm->builder, t0, double_type, "t0");
-   t1 = LLVMBuildBitCast(gallivm->builder, t1, double_type, "t1");
-   t2 = LLVMBuildBitCast(gallivm->builder, t2, double_type, "t2");
-   t3 = LLVMBuildBitCast(gallivm->builder, t3, double_type, "t3");
+      /* Cast to double width type for second interleave */
+      t0 = LLVMBuildBitCast(gallivm->builder, t0, double_type, "t0");
+      t2 = LLVMBuildBitCast(gallivm->builder, t2, double_type, "t2");
+   }
+   if (src[2] || src[3]) {
+      LLVMValueRef src2 = src[2];
+      LLVMValueRef src3 = src[3];
+      if (!src2)
+         src2 = LLVMConstNull(single_type);
+      if (!src3)
+         src3 = LLVMConstNull(single_type);
+      t1 = lp_build_interleave2_half(gallivm, single_type_lp, src2, src3, 0);
+      t3 = lp_build_interleave2_half(gallivm, single_type_lp, src2, src3, 1);
+
+      /* Cast to double width type for second interleave */
+      t1 = LLVMBuildBitCast(gallivm->builder, t1, double_type, "t1");
+      t3 = LLVMBuildBitCast(gallivm->builder, t3, double_type, "t3");
+   }
+
+   if (!t0)
+      t0 = double_type_zero;
+   if (!t1)
+      t1 = double_type_zero;
+   if (!t2)
+      t2 = double_type_zero;
+   if (!t3)
+      t3 = double_type_zero;
 
    /* Interleave xy, zw -> xyzw */
    dst[0] = lp_build_interleave2_half(gallivm, double_type_lp, t0, t1, 0);
@@ -720,7 +748,7 @@ lp_build_transpose_aos_n(struct gallivm_state *gallivm,
 
       default:
          assert(0);
-   };
+   }
 }
 
 

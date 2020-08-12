@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
  *
@@ -28,6 +26,7 @@
 
 #include "pipe/p_state.h"
 #include "util/u_blend.h"
+#include "util/u_dual_blend.h"
 #include "util/u_string.h"
 #include "util/u_memory.h"
 
@@ -67,28 +66,7 @@ fd3_blend_state_create(struct pipe_context *pctx,
 
 	if (cso->logicop_enable) {
 		rop = cso->logicop_func;  /* maps 1:1 */
-
-		switch (cso->logicop_func) {
-		case PIPE_LOGICOP_NOR:
-		case PIPE_LOGICOP_AND_INVERTED:
-		case PIPE_LOGICOP_AND_REVERSE:
-		case PIPE_LOGICOP_INVERT:
-		case PIPE_LOGICOP_XOR:
-		case PIPE_LOGICOP_NAND:
-		case PIPE_LOGICOP_AND:
-		case PIPE_LOGICOP_EQUIV:
-		case PIPE_LOGICOP_NOOP:
-		case PIPE_LOGICOP_OR_INVERTED:
-		case PIPE_LOGICOP_OR_REVERSE:
-		case PIPE_LOGICOP_OR:
-			reads_dest = true;
-			break;
-		}
-	}
-
-	if (cso->independent_blend_enable) {
-		DBG("Unsupported! independent blend state");
-		return NULL;
+		reads_dest = util_logicop_reads_dest(cso->logicop_func);
 	}
 
 	so = CALLOC_STRUCT(fd3_blend_stateobj);
@@ -98,22 +76,19 @@ fd3_blend_state_create(struct pipe_context *pctx,
 	so->base = *cso;
 
 	for (i = 0; i < ARRAY_SIZE(so->rb_mrt); i++) {
-		const struct pipe_rt_blend_state *rt = &cso->rt[i];
+		const struct pipe_rt_blend_state *rt;
+		if (cso->independent_blend_enable)
+			rt = &cso->rt[i];
+		else
+			rt = &cso->rt[0];
 
-		so->rb_mrt[i].blend_control_rgb =
+		so->rb_mrt[i].blend_control =
 				A3XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(fd_blend_factor(rt->rgb_src_factor)) |
 				A3XX_RB_MRT_BLEND_CONTROL_RGB_BLEND_OPCODE(blend_func(rt->rgb_func)) |
-				A3XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(fd_blend_factor(rt->rgb_dst_factor));
-
-		so->rb_mrt[i].blend_control_alpha =
+				A3XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(fd_blend_factor(rt->rgb_dst_factor)) |
 				A3XX_RB_MRT_BLEND_CONTROL_ALPHA_SRC_FACTOR(fd_blend_factor(rt->alpha_src_factor)) |
 				A3XX_RB_MRT_BLEND_CONTROL_ALPHA_BLEND_OPCODE(blend_func(rt->alpha_func)) |
 				A3XX_RB_MRT_BLEND_CONTROL_ALPHA_DEST_FACTOR(fd_blend_factor(rt->alpha_dst_factor));
-
-		so->rb_mrt[i].blend_control_no_alpha_rgb =
-				A3XX_RB_MRT_BLEND_CONTROL_RGB_SRC_FACTOR(fd_blend_factor(util_blend_dst_alpha_to_one(rt->rgb_src_factor))) |
-				A3XX_RB_MRT_BLEND_CONTROL_RGB_BLEND_OPCODE(blend_func(rt->rgb_func)) |
-				A3XX_RB_MRT_BLEND_CONTROL_RGB_DEST_FACTOR(fd_blend_factor(util_blend_dst_alpha_to_one(rt->rgb_dst_factor)));
 
 		so->rb_mrt[i].control =
 				A3XX_RB_MRT_CONTROL_ROP_CODE(rop) |
@@ -131,6 +106,9 @@ fd3_blend_state_create(struct pipe_context *pctx,
 		if (cso->dither)
 			so->rb_mrt[i].control |= A3XX_RB_MRT_CONTROL_DITHER_MODE(DITHER_ALWAYS);
 	}
+
+	if (cso->rt[0].blend_enable && util_blend_state_is_dual(cso, 0))
+		so->rb_render_control = A3XX_RB_RENDER_CONTROL_DUAL_COLOR_IN_ENABLE;
 
 	return so;
 }

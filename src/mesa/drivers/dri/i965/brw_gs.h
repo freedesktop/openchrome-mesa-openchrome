@@ -26,15 +26,24 @@
 
 #include <stdbool.h>
 
+#include "brw_context.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct gl_context;
 struct gl_shader_program;
-struct gl_program;
 
-bool brw_gs_prog_data_compare(const void *a, const void *b);
+void
+brw_upload_gs_prog(struct brw_context *brw);
+
+void
+brw_gs_populate_key(struct brw_context *brw,
+                    struct brw_gs_prog_key *key);
+void
+brw_gs_populate_default_key(const struct brw_compiler *compiler,
+                            struct brw_gs_prog_key *key,
+                            struct gl_program *prog);
 
 #ifdef __cplusplus
 } /* extern "C" */

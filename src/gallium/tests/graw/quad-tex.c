@@ -57,7 +57,7 @@ static void set_vertices( void )
 
    vbuf.stride = sizeof( struct vertex );
    vbuf.buffer_offset = 0;
-   vbuf.buffer = pipe_buffer_create_with_data(info.ctx,
+   vbuf.buffer.resource = pipe_buffer_create_with_data(info.ctx,
                                               PIPE_BIND_VERTEX_BUFFER,
                                               PIPE_USAGE_DEFAULT,
                                               sizeof(vertices),
@@ -92,6 +92,7 @@ static void set_fragment_shader( void )
       "DCL OUT[0], COLOR\n"
       "DCL TEMP[0]\n"
       "DCL SAMP[0]\n"
+      "DCL SVIEW[0], 2D, FLOAT\n"
       "  0: TXP TEMP[0], IN[0], SAMP[0], 2D\n"
       "  1: MOV OUT[0], TEMP[0]\n"
       "  2: END\n";
@@ -105,7 +106,7 @@ static void draw( void )
 {
    union pipe_color_union clear_color = { {.5,.5,.5,1} };
 
-   info.ctx->clear(info.ctx, PIPE_CLEAR_COLOR, &clear_color, 0, 0);
+   info.ctx->clear(info.ctx, PIPE_CLEAR_COLOR, NULL, &clear_color, 0, 0);
    util_draw_arrays(info.ctx, PIPE_PRIM_QUADS, 0, 4);
    info.ctx->flush(info.ctx, NULL, 0);
 
@@ -191,7 +192,8 @@ static void init( void )
       rasterizer.cull_face = PIPE_FACE_NONE;
       rasterizer.half_pixel_center = 1;
       rasterizer.bottom_edge_rule = 1;
-      rasterizer.depth_clip = 1;
+      rasterizer.depth_clip_near = 1;
+      rasterizer.depth_clip_far = 1;
       handle = info.ctx->create_rasterizer_state(info.ctx, &rasterizer);
       info.ctx->bind_rasterizer_state(info.ctx, handle);
    }

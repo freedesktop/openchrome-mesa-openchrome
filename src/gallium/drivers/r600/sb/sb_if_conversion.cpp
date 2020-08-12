@@ -42,16 +42,13 @@ int if_conversion::run() {
 	regions_vec &rv = sh.get_regions();
 
 	unsigned converted = 0;
-
-	for (regions_vec::reverse_iterator N, I = rv.rbegin(), E = rv.rend();
-			I != E; I = N) {
-		N = I; ++N;
-
+	for (regions_vec::reverse_iterator I = rv.rbegin(); I != rv.rend(); ) {
 		region_node *r = *I;
 		if (run_on(r)) {
-			rv.erase(I.base() - 1);
+			I = regions_vec::reverse_iterator(rv.erase((++I).base()));
 			++converted;
-		}
+		} else
+			++I;
 	}
 	return 0;
 }
@@ -102,8 +99,8 @@ void if_conversion::convert_kill_instructions(region_node *r,
 			a->src[0] = cnd;
 			a->src[1] = sh.get_const_value(0);
 			// clear modifiers
-			memset(&a->bc.src[0], 0, sizeof(bc_alu_src));
-			memset(&a->bc.src[1], 0, sizeof(bc_alu_src));
+			a->bc.src[0].clear();
+			a->bc.src[1].clear();
 		} else {
 			// kill with constant 'false' condition, this shouldn't happen
 			// but remove it anyway
@@ -136,7 +133,7 @@ bool if_conversion::check_and_convert(region_node *r) {
 	);
 
 	if (s.region_count || s.fetch_count || s.alu_kill_count ||
-			s.if_count != 1 || s.repeat_count)
+                       s.if_count != 1 || s.repeat_count || s.uses_ar)
 		return false;
 
 	unsigned real_alu_count = s.alu_count - s.alu_copy_mov_count;

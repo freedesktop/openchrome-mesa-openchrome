@@ -30,8 +30,7 @@
  */
 
 
-#include "util/u_clear.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_pack_color.h"
 #include "i915_context.h"
 #include "i915_screen.h"
@@ -218,15 +217,36 @@ i915_clear_emit(struct pipe_context *pipe, unsigned buffers,
  */
 void
 i915_clear_blitter(struct pipe_context *pipe, unsigned buffers,
+                   const struct pipe_scissor_state *scissor_state,
                    const union pipe_color_union *color,
                    double depth, unsigned stencil)
 {
-   util_clear(pipe, &i915_context(pipe)->framebuffer, buffers, color, depth,
-              stencil);
+   struct pipe_framebuffer_state *framebuffer =
+      &i915_context(pipe)->framebuffer;
+   unsigned i;
+
+   for (i = 0; i < framebuffer->nr_cbufs; i++) {
+      if (buffers & (PIPE_CLEAR_COLOR0 << i)) {
+         struct pipe_surface *ps = framebuffer->cbufs[i];
+
+         if (ps) {
+            pipe->clear_render_target(pipe, ps, color, 0, 0, ps->width,
+                                      ps->height, true);
+         }
+      }
+   }
+
+   if (buffers & PIPE_CLEAR_DEPTHSTENCIL) {
+      struct pipe_surface *ps = framebuffer->zsbuf;
+      pipe->clear_depth_stencil(pipe, ps, buffers & PIPE_CLEAR_DEPTHSTENCIL,
+                                depth, stencil,
+                                0, 0, ps->width, ps->height, true);
+   }
 }
 
 void
 i915_clear_render(struct pipe_context *pipe, unsigned buffers,
+                  const struct pipe_scissor_state *scissor_state,
                   const union pipe_color_union *color,
                   double depth, unsigned stencil)
 {

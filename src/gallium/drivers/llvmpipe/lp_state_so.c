@@ -70,11 +70,25 @@ llvmpipe_set_so_targets(struct pipe_context *pipe,
    int i;
    for (i = 0; i < num_targets; i++) {
       const boolean append = (offsets[i] == (unsigned)-1);
+      /*
+       * Warn if the so target was created in another context.
+       * XXX Not entirely sure if mesa/st may rely on this?
+       * Otherwise should just assert.
+       */
+      if (targets[i] && targets[i]->context != pipe) {
+         debug_printf("Illegal setting of so target with target %d created in "
+                       "another context\n", i);
+      }
       pipe_so_target_reference((struct pipe_stream_output_target **)&llvmpipe->so_targets[i], targets[i]);
       /* If we're not appending then lets set the internal
          offset to what was requested */
       if (!append && llvmpipe->so_targets[i]) {
          llvmpipe->so_targets[i]->internal_offset = offsets[i];
+      }
+
+      if (targets[i]) {
+         void *buf = llvmpipe_resource(targets[i]->buffer)->data;
+         llvmpipe->so_targets[i]->mapping = buf;
       }
    }
 
@@ -82,6 +96,9 @@ llvmpipe_set_so_targets(struct pipe_context *pipe,
       pipe_so_target_reference((struct pipe_stream_output_target **)&llvmpipe->so_targets[i], NULL);
    }
    llvmpipe->num_so_targets = num_targets;
+
+   draw_set_mapped_so_targets(llvmpipe->draw, llvmpipe->num_so_targets,
+                              llvmpipe->so_targets);
 }
 
 void

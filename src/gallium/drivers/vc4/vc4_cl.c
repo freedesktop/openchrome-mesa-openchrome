@@ -26,21 +26,23 @@
 #include "vc4_context.h"
 
 void
-vc4_init_cl(struct vc4_context *vc4, struct vc4_cl *cl)
+vc4_init_cl(struct vc4_job *job, struct vc4_cl *cl)
 {
-        cl->base = ralloc_size(vc4, 1);
+        cl->base = rzalloc_size(job, 1); /* TODO: don't use rzalloc */
         cl->next = cl->base;
         cl->size = 0;
+        cl->job = job;
 }
 
 void
 cl_ensure_space(struct vc4_cl *cl, uint32_t space)
 {
-        if ((cl->next - cl->base) + space <= cl->size)
+        uint32_t offset = cl_offset(cl);
+
+        if (offset + space <= cl->size)
                 return;
 
         uint32_t size = MAX2(cl->size + space, cl->size * 2);
-        uint32_t offset = cl->next -cl->base;
 
         cl->base = reralloc(ralloc_parent(cl->base), cl->base, uint8_t, size);
         cl->size = size;
@@ -55,20 +57,37 @@ vc4_reset_cl(struct vc4_cl *cl)
 }
 
 uint32_t
-vc4_gem_hindex(struct vc4_context *vc4, struct vc4_bo *bo)
+vc4_gem_hindex(struct vc4_job *job, struct vc4_bo *bo)
 {
         uint32_t hindex;
-        uint32_t *current_handles = vc4->bo_handles.base;
+        uint32_t *current_handles = job->bo_handles.base;
+        uint32_t cl_hindex_count = cl_offset(&job->bo_handles) / 4;
+        uint32_t last_hindex = bo->last_hindex; /* volatile read! */
 
-        for (hindex = 0;
-             hindex < (vc4->bo_handles.next - vc4->bo_handles.base) / 4;
-             hindex++) {
-                if (current_handles[hindex] == bo->handle)
-                        return hindex;
+        if (last_hindex < cl_hindex_count &&
+            current_handles[last_hindex] == bo->handle) {
+                return last_hindex;
         }
 
-        cl_u32(&vc4->bo_handles, bo->handle);
-        cl_ptr(&vc4->bo_pointers, vc4_bo_reference(bo));
+        for (hindex = 0; hindex < cl_hindex_count; hindex++) {
+                if (current_handles[hindex] == bo->handle) {
+                        bo->last_hindex = hindex;
+                        return hindex;
+                }
+        }
 
+        struct vc4_cl_out *out;
+
+        out = cl_start(&job->bo_handles);
+        cl_u32(&out, bo->handle);
+        cl_end(&job->bo_handles, out);
+
+        out = cl_start(&job->bo_pointers);
+        cl_ptr(&out, vc4_bo_reference(bo));
+        cl_end(&job->bo_pointers, out);
+
+        job->bo_space += bo->size;
+
+        bo->last_hindex = hindex;
         return hindex;
 }

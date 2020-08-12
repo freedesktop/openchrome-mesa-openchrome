@@ -32,7 +32,7 @@
  * 
  * @sa http://en.wikipedia.org/wiki/Slab_allocation
  * 
- * @author Thomas Hellstrom <thellstom-at-vmware-dot-com>
+ * @author Thomas Hellstrom <thellstrom-at-vmware-dot-com>
  * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
@@ -41,8 +41,7 @@
 #include "os/os_thread.h"
 #include "pipe/p_defines.h"
 #include "util/u_memory.h"
-#include "util/u_double_list.h"
-#include "util/u_time.h"
+#include "util/list.h"
 
 #include "pb_buffer.h"
 #include "pb_bufmgr.h"
@@ -71,7 +70,7 @@ struct pb_slab_buffer
    
    /** Use when validating, to signal that all mappings are finished */
    /* TODO: Actually validation does not reach this stage yet */
-   pipe_condvar event;
+   cnd_t event;
 };
 
 
@@ -128,7 +127,7 @@ struct pb_slab_manager
     */
    struct list_head slabs;
    
-   pipe_mutex mutex;
+   mtx_t mutex;
 };
 
 
@@ -163,7 +162,7 @@ struct pb_slab_range_manager
 };
 
 
-static INLINE struct pb_slab_buffer *
+static inline struct pb_slab_buffer *
 pb_slab_buffer(struct pb_buffer *buf)
 {
    assert(buf);
@@ -171,7 +170,7 @@ pb_slab_buffer(struct pb_buffer *buf)
 }
 
 
-static INLINE struct pb_slab_manager *
+static inline struct pb_slab_manager *
 pb_slab_manager(struct pb_manager *mgr)
 {
    assert(mgr);
@@ -179,7 +178,7 @@ pb_slab_manager(struct pb_manager *mgr)
 }
 
 
-static INLINE struct pb_slab_range_manager *
+static inline struct pb_slab_range_manager *
 pb_slab_range_manager(struct pb_manager *mgr)
 {
    assert(mgr);
@@ -199,35 +198,36 @@ pb_slab_buffer_destroy(struct pb_buffer *_buf)
    struct pb_slab_manager *mgr = slab->mgr;
    struct list_head *list = &buf->head;
 
-   pipe_mutex_lock(mgr->mutex);
+   mtx_lock(&mgr->mutex);
    
    assert(!pipe_is_referenced(&buf->base.reference));
    
    buf->mapCount = 0;
 
-   LIST_DEL(list);
-   LIST_ADDTAIL(list, &slab->freeBuffers);
+   list_del(list);
+   list_addtail(list, &slab->freeBuffers);
    slab->numFree++;
 
    if (slab->head.next == &slab->head)
-      LIST_ADDTAIL(&slab->head, &mgr->slabs);
+      list_addtail(&slab->head, &mgr->slabs);
 
    /* If the slab becomes totally empty, free it */
    if (slab->numFree == slab->numBuffers) {
       list = &slab->head;
-      LIST_DELINIT(list);
+      list_delinit(list);
+      pb_unmap(slab->bo);
       pb_reference(&slab->bo, NULL);
       FREE(slab->buffers);
       FREE(slab);
    }
 
-   pipe_mutex_unlock(mgr->mutex);
+   mtx_unlock(&mgr->mutex);
 }
 
 
 static void *
 pb_slab_buffer_map(struct pb_buffer *_buf, 
-                   unsigned flags,
+                   enum pb_usage_flags flags,
                    void *flush_ctx)
 {
    struct pb_slab_buffer *buf = pb_slab_buffer(_buf);
@@ -246,14 +246,14 @@ pb_slab_buffer_unmap(struct pb_buffer *_buf)
 
    --buf->mapCount;
    if (buf->mapCount == 0) 
-       pipe_condvar_broadcast(buf->event);
+       cnd_broadcast(&buf->event);
 }
 
 
 static enum pipe_error 
 pb_slab_buffer_validate(struct pb_buffer *_buf, 
                          struct pb_validate *vl,
-                         unsigned flags)
+                         enum pb_usage_flags flags)
 {
    struct pb_slab_buffer *buf = pb_slab_buffer(_buf);
    return pb_validate(buf->slab->bo, vl, flags);
@@ -316,15 +316,16 @@ pb_slab_create(struct pb_slab_manager *mgr)
    }
 
    /* Note down the slab virtual address. All mappings are accessed directly 
-    * through this address so it is required that the buffer is pinned. */
+    * through this address so it is required that the buffer is mapped
+    * persistent */
    slab->virtual = pb_map(slab->bo, 
                           PB_USAGE_CPU_READ |
-                          PB_USAGE_CPU_WRITE, NULL);
+                          PB_USAGE_CPU_WRITE |
+                          PB_USAGE_PERSISTENT, NULL);
    if(!slab->virtual) {
       ret = PIPE_ERROR_OUT_OF_MEMORY;
       goto out_err1;
    }
-   pb_unmap(slab->bo);
 
    numBuffers = slab->bo->size / mgr->bufSize;
 
@@ -334,8 +335,8 @@ pb_slab_create(struct pb_slab_manager *mgr)
       goto out_err1;
    }
 
-   LIST_INITHEAD(&slab->head);
-   LIST_INITHEAD(&slab->freeBuffers);
+   list_inithead(&slab->head);
+   list_inithead(&slab->freeBuffers);
    slab->numBuffers = numBuffers;
    slab->numFree = 0;
    slab->mgr = mgr;
@@ -350,14 +351,14 @@ pb_slab_create(struct pb_slab_manager *mgr)
       buf->slab = slab;
       buf->start = i* mgr->bufSize;
       buf->mapCount = 0;
-      pipe_condvar_init(buf->event);
-      LIST_ADDTAIL(&buf->head, &slab->freeBuffers);
+      cnd_init(&buf->event);
+      list_addtail(&buf->head, &slab->freeBuffers);
       slab->numFree++;
       buf++;
    }
 
    /* Add this slab to the list of partial slabs */
-   LIST_ADDTAIL(&slab->head, &mgr->slabs);
+   list_addtail(&slab->head, &mgr->slabs);
 
    return PIPE_OK;
 
@@ -396,13 +397,13 @@ pb_slab_manager_create_buffer(struct pb_manager *_mgr,
    if(!pb_check_usage(desc->usage, mgr->desc.usage))
       return NULL;
 
-   pipe_mutex_lock(mgr->mutex);
+   mtx_lock(&mgr->mutex);
    
    /* Create a new slab, if we run out of partial slabs */
    if (mgr->slabs.next == &mgr->slabs) {
       (void) pb_slab_create(mgr);
       if (mgr->slabs.next == &mgr->slabs) {
-	 pipe_mutex_unlock(mgr->mutex);
+	 mtx_unlock(&mgr->mutex);
 	 return NULL;
       }
    }
@@ -413,12 +414,12 @@ pb_slab_manager_create_buffer(struct pb_manager *_mgr,
    
    /* If totally full remove from the partial slab list */
    if (--slab->numFree == 0)
-      LIST_DELINIT(list);
+      list_delinit(list);
 
    list = slab->freeBuffers.next;
-   LIST_DELINIT(list);
+   list_delinit(list);
 
-   pipe_mutex_unlock(mgr->mutex);
+   mtx_unlock(&mgr->mutex);
    buf = LIST_ENTRY(struct pb_slab_buffer, list, head);
    
    pipe_reference_init(&buf->base.reference, 1);
@@ -471,9 +472,9 @@ pb_slab_manager_create(struct pb_manager *provider,
    mgr->slabSize = slabSize;
    mgr->desc = *desc;
 
-   LIST_INITHEAD(&mgr->slabs);
+   list_inithead(&mgr->slabs);
    
-   pipe_mutex_init(mgr->mutex);
+   (void) mtx_init(&mgr->mutex, mtx_plain);
 
    return &mgr->base;
 }
@@ -487,7 +488,7 @@ pb_slab_range_manager_create_buffer(struct pb_manager *_mgr,
    struct pb_slab_range_manager *mgr = pb_slab_range_manager(_mgr);
    pb_size bufSize;
    pb_size reqSize = size;
-   unsigned i;
+   enum pb_usage_flags i;
 
    if(desc->alignment > reqSize)
 	   reqSize = desc->alignment;
@@ -542,7 +543,7 @@ pb_slab_range_manager_create(struct pb_manager *provider,
    pb_size bufSize;
    unsigned i;
 
-   if(!provider)
+   if (!provider)
       return NULL;
    
    mgr = CALLOC_STRUCT(pb_slab_range_manager);

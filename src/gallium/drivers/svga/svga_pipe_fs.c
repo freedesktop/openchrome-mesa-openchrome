@@ -31,14 +31,13 @@
 #include "draw/draw_context.h"
 
 #include "svga_context.h"
-#include "svga_tgsi.h"
 #include "svga_hw_reg.h"
 #include "svga_cmd.h"
 #include "svga_debug.h"
 #include "svga_shader.h"
 
 
-static void *
+void *
 svga_create_fs_state(struct pipe_context *pipe,
                      const struct pipe_shader_state *templ)
 {
@@ -48,6 +47,8 @@ svga_create_fs_state(struct pipe_context *pipe,
    fs = CALLOC_STRUCT(svga_fragment_shader);
    if (!fs)
       return NULL;
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_CREATEFS);
 
    fs->base.tokens = tgsi_dup_tokens(templ->tokens);
 
@@ -63,17 +64,12 @@ svga_create_fs_state(struct pipe_context *pipe,
 
    fs->draw_shader = draw_create_fragment_shader(svga->swtnl.draw, templ);
 
-   if (SVGA_DEBUG & DEBUG_TGSI || 0) {
-      debug_printf("%s id: %u, inputs: %u, outputs: %u\n",
-                   __FUNCTION__, fs->base.id,
-                   fs->base.info.num_inputs, fs->base.info.num_outputs);
-   }
-
+   SVGA_STATS_TIME_POP(svga_sws(svga));
    return fs;
 }
 
 
-static void
+void
 svga_bind_fs_state(struct pipe_context *pipe, void *shader)
 {
    struct svga_fragment_shader *fs = (struct svga_fragment_shader *) shader;
@@ -89,29 +85,34 @@ svga_delete_fs_state(struct pipe_context *pipe, void *shader)
 {
    struct svga_context *svga = svga_context(pipe);
    struct svga_fragment_shader *fs = (struct svga_fragment_shader *) shader;
+   struct svga_fragment_shader *next_fs;
    struct svga_shader_variant *variant, *tmp;
-   enum pipe_error ret;
 
    svga_hwtnl_flush_retry(svga);
 
-   draw_delete_fragment_shader(svga->swtnl.draw, fs->draw_shader);
+   assert(fs->base.parent == NULL);
 
-   for (variant = fs->base.variants; variant; variant = tmp) {
-      tmp = variant->next;
+   while (fs) {
+      next_fs = (struct svga_fragment_shader *) fs->base.next;
 
-      ret = svga_destroy_shader_variant(svga, SVGA3D_SHADERTYPE_PS, variant);
-      (void) ret;  /* PIPE_ERROR_ not handled yet */
+      draw_delete_fragment_shader(svga->swtnl.draw, fs->draw_shader);
 
-      /*
-       * Remove stale references to this variant to ensure a new variant on the
-       * same address will be detected as a change.
-       */
-      if (variant == svga->state.hw_draw.fs)
-         svga->state.hw_draw.fs = NULL;
+      for (variant = fs->base.variants; variant; variant = tmp) {
+         tmp = variant->next;
+
+         /* Check if deleting currently bound shader */
+         if (variant == svga->state.hw_draw.fs) {
+            SVGA_RETRY(svga, svga_set_shader(svga, SVGA3D_SHADERTYPE_PS, NULL));
+            svga->state.hw_draw.fs = NULL;
+         }
+
+         svga_destroy_shader_variant(svga, variant);
+      }
+
+      FREE((void *)fs->base.tokens);
+      FREE(fs);
+      fs = next_fs;
    }
-
-   FREE((void *)fs->base.tokens);
-   FREE(fs);
 }
 
 

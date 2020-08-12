@@ -31,8 +31,9 @@ const uint8_t Target::operationSrcNr[] =
    0, 0, 0, 0,             // UNION, SPLIT, MERGE, CONSTRAINT
    1, 1, 2,                // MOV, LOAD, STORE
    2, 2, 2, 2, 2, 3, 3, 3, // ADD, SUB, MUL, DIV, MOD, MAD, FMA, SAD
+   3, 3,                   // SHLADD, XMAD
    1, 1, 1,                // ABS, NEG, NOT
-   2, 2, 2, 2, 2,          // AND, OR, XOR, SHL, SHR
+   2, 2, 2, 3, 2, 2, 3,    // AND, OR, XOR, LOP3_LUT, SHL, SHR, SHF
    2, 2, 1,                // MAX, MIN, SAT
    1, 1, 1, 1,             // CEIL, FLOOR, TRUNC, CVT
    3, 3, 3, 2, 3, 3,       // SET_AND,OR,XOR, SET, SELP, SLCT
@@ -41,20 +42,24 @@ const uint8_t Target::operationSrcNr[] =
    0, 0, 0, 0, 0,          // BRA, CALL, RET, CONT, BREAK,
    0, 0, 0,                // PRERET,CONT,BREAK
    0, 0, 0, 0, 0, 0,       // BRKPT, JOINAT, JOIN, DISCARD, EXIT, MEMBAR
-   1, 1, 2, 1, 2,          // VFETCH, PFETCH, EXPORT, LINTERP, PINTERP
-   1, 1,                   // EMIT, RESTART
+   1, 1, 1, 2, 1, 2,       // VFETCH, PFETCH, AFETCH, EXPORT, LINTERP, PINTERP
+   1, 1, 1,                // EMIT, RESTART, FINAL
    1, 1, 1,                // TEX, TXB, TXL,
    1, 1, 1, 1, 1, 1, 2,    // TXF, TXQ, TXD, TXG, TXLQ, TEXCSAA, TEXPREP
    1, 1, 2, 2, 2, 2, 2,    // SULDB, SULDP, SUSTB, SUSTP, SUREDB, SUREDP, SULEA
-   3, 3, 3, 3,             // SUBFM, SUCLAMP, SUEAU, MADSP
+   3, 3, 3, 1, 3,          // SUBFM, SUCLAMP, SUEAU, SUQ, MADSP
    0,                      // TEXBAR
    1, 1,                   // DFDX, DFDY
    1, 2, 1, 2, 0, 0,       // RDSV, WRSV, PIXLD, QUADOP, QUADON, QUADPOP
-   2, 3, 2, 1, 3,          // POPCNT, INSBF, EXTBF, BFIND, PERMT
+   2, 3, 2, 1, 1, 2, 3,    // POPCNT, INSBF, EXTBF, BFIND, BREV, BMSK, PERMT
+   2,                      // SGXT
    2, 2,                   // ATOM, BAR
    2, 2, 2, 2, 3, 2,       // VADD, VAVG, VMIN, VMAX, VSAD, VSET,
    2, 2, 2, 1,             // VSHR, VSHL, VSEL, CCTL
    3,                      // SHFL
+   1,                      // VOTE
+   1,                      // BUFQ
+   1,                      // WARPSYNC
    0
 };
 
@@ -68,14 +73,14 @@ const OpClass Target::operationClass[] =
    OPCLASS_MOVE,
    OPCLASS_LOAD,
    OPCLASS_STORE,
-   // ADD, SUB, MUL; DIV, MOD; MAD, FMA, SAD
+   // ADD, SUB, MUL; DIV, MOD; MAD, FMA, SAD, SHLADD, XMAD
    OPCLASS_ARITH, OPCLASS_ARITH, OPCLASS_ARITH,
    OPCLASS_ARITH, OPCLASS_ARITH,
-   OPCLASS_ARITH, OPCLASS_ARITH, OPCLASS_ARITH,
-   // ABS, NEG; NOT, AND, OR, XOR; SHL, SHR
+   OPCLASS_ARITH, OPCLASS_ARITH, OPCLASS_ARITH, OPCLASS_ARITH, OPCLASS_ARITH,
+   // ABS, NEG; NOT, AND, OR, XOR, LOP3_LUT; SHL, SHR, SHF
    OPCLASS_CONVERT, OPCLASS_CONVERT,
-   OPCLASS_LOGIC, OPCLASS_LOGIC, OPCLASS_LOGIC, OPCLASS_LOGIC,
-   OPCLASS_SHIFT, OPCLASS_SHIFT,
+   OPCLASS_LOGIC, OPCLASS_LOGIC, OPCLASS_LOGIC, OPCLASS_LOGIC, OPCLASS_LOGIC,
+   OPCLASS_SHIFT, OPCLASS_SHIFT, OPCLASS_SHIFT,
    // MAX, MIN
    OPCLASS_COMPARE, OPCLASS_COMPARE,
    // SAT, CEIL, FLOOR, TRUNC; CVT
@@ -96,12 +101,12 @@ const OpClass Target::operationClass[] =
    OPCLASS_FLOW, OPCLASS_FLOW,
    // MEMBAR
    OPCLASS_CONTROL,
-   // VFETCH, PFETCH, EXPORT
-   OPCLASS_LOAD, OPCLASS_OTHER, OPCLASS_STORE,
+   // VFETCH, PFETCH, AFETCH, EXPORT
+   OPCLASS_LOAD, OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_STORE,
    // LINTERP, PINTERP
    OPCLASS_SFU, OPCLASS_SFU,
-   // EMIT, RESTART
-   OPCLASS_CONTROL, OPCLASS_CONTROL,
+   // EMIT, RESTART, FINAL
+   OPCLASS_CONTROL, OPCLASS_CONTROL, OPCLASS_CONTROL,
    // TEX, TXB, TXL, TXF; TXQ, TXD, TXG, TXLQ; TEXCSAA, TEXPREP
    OPCLASS_TEXTURE, OPCLASS_TEXTURE, OPCLASS_TEXTURE, OPCLASS_TEXTURE,
    OPCLASS_TEXTURE, OPCLASS_TEXTURE, OPCLASS_TEXTURE, OPCLASS_TEXTURE,
@@ -109,16 +114,16 @@ const OpClass Target::operationClass[] =
    // SULDB, SULDP, SUSTB, SUSTP; SUREDB, SUREDP, SULEA
    OPCLASS_SURFACE, OPCLASS_SURFACE, OPCLASS_ATOMIC, OPCLASS_SURFACE,
    OPCLASS_SURFACE, OPCLASS_SURFACE, OPCLASS_SURFACE,
-   // SUBFM, SUCLAMP, SUEAU, MADSP
-   OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_ARITH,
+   // SUBFM, SUCLAMP, SUEAU, SUQ, MADSP
+   OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_ARITH,
    // TEXBAR
    OPCLASS_OTHER,
    // DFDX, DFDY, RDSV, WRSV; PIXLD, QUADOP, QUADON, QUADPOP
    OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_OTHER,
    OPCLASS_OTHER, OPCLASS_OTHER, OPCLASS_CONTROL, OPCLASS_CONTROL,
-   // POPCNT, INSBF, EXTBF, BFIND; PERMT
+   // POPCNT, INSBF, EXTBF, BFIND, BREV, BMSK; PERMT, SGXT
    OPCLASS_BITFIELD, OPCLASS_BITFIELD, OPCLASS_BITFIELD, OPCLASS_BITFIELD,
-   OPCLASS_BITFIELD,
+   OPCLASS_BITFIELD, OPCLASS_BITFIELD, OPCLASS_BITFIELD, OPCLASS_BITFIELD,
    // ATOM, BAR
    OPCLASS_ATOMIC, OPCLASS_CONTROL,
    // VADD, VAVG, VMIN, VMAX
@@ -129,20 +134,32 @@ const OpClass Target::operationClass[] =
    OPCLASS_VECTOR, OPCLASS_CONTROL,
    // SHFL
    OPCLASS_OTHER,
+   // VOTE
+   OPCLASS_OTHER,
+   // BUFQ
+   OPCLASS_OTHER,
+   // WARPSYNC
+   OPCLASS_OTHER,
    OPCLASS_PSEUDO // LAST
 };
 
 
+extern Target *getTargetGV100(unsigned int chipset);
 extern Target *getTargetGM107(unsigned int chipset);
 extern Target *getTargetNVC0(unsigned int chipset);
 extern Target *getTargetNV50(unsigned int chipset);
 
 Target *Target::create(unsigned int chipset)
 {
-   STATIC_ASSERT(Elements(operationSrcNr) == OP_LAST + 1);
-   STATIC_ASSERT(Elements(operationClass) == OP_LAST + 1);
+   STATIC_ASSERT(ARRAY_SIZE(operationSrcNr) == OP_LAST + 1);
+   STATIC_ASSERT(ARRAY_SIZE(operationClass) == OP_LAST + 1);
    switch (chipset & ~0xf) {
+   case 0x160:
+   case 0x140:
+      return getTargetGV100(chipset);
    case 0x110:
+   case 0x120:
+   case 0x130:
       return getTargetGM107(chipset);
    case 0xc0:
    case 0xd0:
@@ -166,7 +183,7 @@ void Target::destroy(Target *targ)
    delete targ;
 }
 
-CodeEmitter::CodeEmitter(const Target *target) : targ(target)
+CodeEmitter::CodeEmitter(const Target *target) : targ(target), fixupInfo(NULL)
 {
 }
 
@@ -373,6 +390,7 @@ Program::emitBinary(struct nv50_ir_prog_info *info)
    if (!code)
       return false;
    emit->setCodeLocation(code, binSize);
+   info->bin.instructions = 0;
 
    for (ArrayList::Iterator fi = allFuncs.iterator(); !fi.end(); fi.next()) {
       Function *fn = reinterpret_cast<Function *>(fi.get());
@@ -382,12 +400,16 @@ Program::emitBinary(struct nv50_ir_prog_info *info)
       for (int b = 0; b < fn->bbCount; ++b) {
          for (Instruction *i = fn->bbArray[b]->getEntry(); i; i = i->next) {
             emit->emitInstruction(i);
-            if (i->sType == TYPE_F64 || i->dType == TYPE_F64)
+            info->bin.instructions++;
+            if ((typeSizeof(i->sType) == 8 || typeSizeof(i->dType) == 8) &&
+                (isFloatType(i->sType) || isFloatType(i->dType)))
                info->io.fp64 = true;
          }
       }
    }
+   info->io.fp64 |= fp64;
    info->bin.relocData = emit->getRelocInfo();
+   info->bin.fixupData = emit->getFixupInfo();
 
    emitSymbolTable(info);
 
@@ -424,6 +446,28 @@ CodeEmitter::addReloc(RelocEntry::Type ty, int w, uint32_t data, uint32_t m,
    relocInfo->entry[n].offset = codeSize + w * 4;
    relocInfo->entry[n].bitPos = s;
    relocInfo->entry[n].type = ty;
+
+   return true;
+}
+
+bool
+CodeEmitter::addInterp(int ipa, int reg, FixupApply apply)
+{
+   unsigned int n = fixupInfo ? fixupInfo->count : 0;
+
+   if (!(n % RELOC_ALLOC_INCREMENT)) {
+      size_t size = sizeof(FixupInfo) + n * sizeof(FixupEntry);
+      fixupInfo = reinterpret_cast<FixupInfo *>(
+         REALLOC(fixupInfo, n ? size : 0,
+                 size + RELOC_ALLOC_INCREMENT * sizeof(FixupEntry)));
+      if (!fixupInfo)
+         return false;
+      if (n == 0)
+         fixupInfo->count = 0;
+   }
+   ++fixupInfo->count;
+
+   fixupInfo->entry[n] = FixupEntry(apply, ipa, reg, codeSize >> 2);
 
    return true;
 }
@@ -469,6 +513,22 @@ nv50_ir_relocate_code(void *relocData, uint32_t *code,
 
    for (unsigned int i = 0; i < info->count; ++i)
       info->entry[i].apply(code, info);
+}
+
+void
+nv50_ir_apply_fixups(void *fixupData, uint32_t *code,
+                     bool force_persample_interp, bool flatshade,
+                     uint8_t alphatest)
+{
+   nv50_ir::FixupInfo *info = reinterpret_cast<nv50_ir::FixupInfo *>(
+      fixupData);
+
+   // force_persample_interp: all non-flat -> per-sample
+   // flatshade: all color -> flat
+   // alphatest: PIPE_FUNC_* to use with alphatest
+   nv50_ir::FixupData data(force_persample_interp, flatshade, alphatest);
+   for (unsigned i = 0; i < info->count; ++i)
+      info->entry[i].apply(&info->entry[i], code, data);
 }
 
 void

@@ -82,47 +82,32 @@ softpipe_draw_vbo(struct pipe_context *pipe,
 
    /* Map vertex buffers */
    for (i = 0; i < sp->num_vertex_buffers; i++) {
-      const void *buf = sp->vertex_buffer[i].user_buffer;
+      const void *buf = sp->vertex_buffer[i].is_user_buffer ?
+                           sp->vertex_buffer[i].buffer.user : NULL;
       size_t size = ~0;
       if (!buf) {
-         if (!sp->vertex_buffer[i].buffer) {
+         if (!sp->vertex_buffer[i].buffer.resource) {
             continue;
          }
-         buf = softpipe_resource_data(sp->vertex_buffer[i].buffer);
-         size = sp->vertex_buffer[i].buffer->width0;
+         buf = softpipe_resource_data(sp->vertex_buffer[i].buffer.resource);
+         size = sp->vertex_buffer[i].buffer.resource->width0;
       }
       draw_set_mapped_vertex_buffer(draw, i, buf, size);
    }
 
    /* Map index buffer, if present */
-   if (info->indexed) {
+   if (info->index_size) {
       unsigned available_space = ~0;
-      mapped_indices = sp->index_buffer.user_buffer;
+      mapped_indices = info->has_user_indices ? info->index.user : NULL;
       if (!mapped_indices) {
-         mapped_indices = softpipe_resource_data(sp->index_buffer.buffer);
-         if (sp->index_buffer.buffer->width0 > sp->index_buffer.offset)
-            available_space =
-               (sp->index_buffer.buffer->width0 - sp->index_buffer.offset);
-         else
-            available_space = 0;
+         mapped_indices = softpipe_resource_data(info->index.resource);
+         available_space = info->index.resource->width0;
       }
 
       draw_set_indexes(draw,
-                       (ubyte *) mapped_indices + sp->index_buffer.offset,
-                       sp->index_buffer.index_size, available_space);
+                       (ubyte *) mapped_indices,
+                       info->index_size, available_space);
    }
-
-
-   for (i = 0; i < sp->num_so_targets; i++) {
-      void *buf = 0;
-      if (sp->so_targets[i]) {
-         buf = softpipe_resource(sp->so_targets[i]->target.buffer)->data;
-         sp->so_targets[i]->mapping = buf;
-      }
-   }
-
-   draw_set_mapped_so_targets(draw, sp->num_so_targets,
-                              sp->so_targets);
 
    if (softpipe_screen(sp->pipe.screen)->use_llvm) {
       softpipe_prepare_vertex_sampling(sp,
@@ -153,8 +138,6 @@ softpipe_draw_vbo(struct pipe_context *pipe,
    if (mapped_indices) {
       draw_set_indexes(draw, NULL, 0, 0);
    }
-
-   draw_set_mapped_so_targets(draw, 0, NULL);
 
    if (softpipe_screen(sp->pipe.screen)->use_llvm) {
       softpipe_cleanup_vertex_sampling(sp);

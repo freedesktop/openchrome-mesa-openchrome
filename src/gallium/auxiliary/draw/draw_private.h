@@ -46,7 +46,7 @@
 
 #include "tgsi/tgsi_scan.h"
 
-#ifdef HAVE_LLVM
+#ifdef LLVM_AVAILABLE
 struct gallivm_state;
 #endif
 
@@ -66,10 +66,12 @@ struct draw_stage;
 struct vbuf_render;
 struct tgsi_exec_machine;
 struct tgsi_sampler;
+struct tgsi_image;
+struct tgsi_buffer;
 struct draw_pt_front_end;
 struct draw_assembler;
 struct draw_llvm;
-
+struct lp_cached_code;
 
 /**
  * Represents the mapped vertex buffer.
@@ -86,11 +88,10 @@ struct draw_vertex_buffer {
 struct vertex_header {
    unsigned clipmask:DRAW_TOTAL_CLIP_PLANES;
    unsigned edgeflag:1;
-   unsigned have_clipdist:1;
+   unsigned pad:1;
    unsigned vertex_id:16;
 
-   float clip[4];
-   float pre_clip_pos[4];
+   float clip_pos[4];
 
    /* This will probably become float (*data)[4] soon:
     */
@@ -102,7 +103,7 @@ struct vertex_header {
 
 
 /* maximum number of shader variants we can cache */
-#define DRAW_MAX_SHADER_VARIANTS 128
+#define DRAW_MAX_SHADER_VARIANTS 512
 
 /**
  * Private context for the drawing module.
@@ -121,6 +122,7 @@ struct draw_context
       struct draw_stage *flatshade;
       struct draw_stage *clip;
       struct draw_stage *cull;
+      struct draw_stage *user_cull;
       struct draw_stage *twoside;
       struct draw_stage *offset;
       struct draw_stage *unfilled;
@@ -156,7 +158,7 @@ struct draw_context
       unsigned prim;
       unsigned opt;     /**< bitmask of PT_x flags */
       unsigned eltSize; /* saved eltSize for flushing */
-
+      ubyte vertices_per_patch;
       boolean rebind_parameters;
 
       struct {
@@ -195,6 +197,7 @@ struct draw_context
          int eltBias;         
          unsigned min_index;
          unsigned max_index;
+         unsigned drawid;
          
          /** vertex arrays */
          struct draw_vertex_buffer vbuffer[PIPE_MAX_ATTRIBS];
@@ -204,7 +207,21 @@ struct draw_context
          unsigned vs_constants_size[PIPE_MAX_CONSTANT_BUFFERS];
          const void *gs_constants[PIPE_MAX_CONSTANT_BUFFERS];
          unsigned gs_constants_size[PIPE_MAX_CONSTANT_BUFFERS];
-         
+         const void *tcs_constants[PIPE_MAX_CONSTANT_BUFFERS];
+         unsigned tcs_constants_size[PIPE_MAX_CONSTANT_BUFFERS];
+         const void *tes_constants[PIPE_MAX_CONSTANT_BUFFERS];
+         unsigned tes_constants_size[PIPE_MAX_CONSTANT_BUFFERS];
+
+         /** shader buffers (for vertex/geometry shader) */
+         const void *vs_ssbos[PIPE_MAX_SHADER_BUFFERS];
+         unsigned vs_ssbos_size[PIPE_MAX_SHADER_BUFFERS];
+         const void *gs_ssbos[PIPE_MAX_SHADER_BUFFERS];
+         unsigned gs_ssbos_size[PIPE_MAX_SHADER_BUFFERS];
+         const void *tcs_ssbos[PIPE_MAX_SHADER_BUFFERS];
+         unsigned tcs_ssbos_size[PIPE_MAX_SHADER_BUFFERS];
+         const void *tes_ssbos[PIPE_MAX_SHADER_BUFFERS];
+         unsigned tes_ssbos_size[PIPE_MAX_SHADER_BUFFERS];
+
          /* pointer to planes */
          float (*planes)[DRAW_TOTAL_CLIP_PLANES][4]; 
       } user;
@@ -261,13 +278,15 @@ struct draw_context
       uint position_output;
       uint edgeflag_output;
       uint clipvertex_output;
-      uint clipdistance_output[2];
+      uint ccdistance_output[2];
 
       /** Fields for TGSI interpreter / execution */
       struct {
          struct tgsi_exec_machine *machine;
 
          struct tgsi_sampler *sampler;
+         struct tgsi_image *image;
+         struct tgsi_buffer *buffer;
       } tgsi;
 
       struct translate *fetch;
@@ -287,9 +306,39 @@ struct draw_context
          struct tgsi_exec_machine *machine;
 
          struct tgsi_sampler *sampler;
+         struct tgsi_image *image;
+         struct tgsi_buffer *buffer;
       } tgsi;
 
    } gs;
+
+   /* Tessellation state */
+   struct {
+      struct draw_tess_ctrl_shader *tess_ctrl_shader;
+
+      /** Fields for TGSI interpreter / execution */
+      struct {
+         struct tgsi_exec_machine *machine;
+
+         struct tgsi_sampler *sampler;
+         struct tgsi_image *image;
+         struct tgsi_buffer *buffer;
+      } tgsi;
+   } tcs;
+
+   struct {
+      struct draw_tess_eval_shader *tess_eval_shader;
+      uint position_output;
+
+      /** Fields for TGSI interpreter / execution */
+      struct {
+         struct tgsi_exec_machine *machine;
+
+         struct tgsi_sampler *sampler;
+         struct tgsi_image *image;
+         struct tgsi_buffer *buffer;
+      } tgsi;
+   } tes;
 
    /** Fragment shader state */
    struct {
@@ -318,7 +367,7 @@ struct draw_context
    unsigned instance_id;
    unsigned start_instance;
    unsigned start_index;
-
+   unsigned constant_buffer_stride;
    struct draw_llvm *llvm;
 
    /** Texture sampler and sampler view state.
@@ -331,10 +380,25 @@ struct draw_context
    const struct pipe_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
    unsigned num_samplers[PIPE_SHADER_TYPES];
 
+   struct pipe_image_view *images[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
+   unsigned num_images[PIPE_SHADER_TYPES];
+
    struct pipe_query_data_pipeline_statistics statistics;
    boolean collect_statistics;
 
+   float default_outer_tess_level[4];
+   float default_inner_tess_level[2];
+   bool collect_primgen;
+
    struct draw_assembler *ia;
+
+   void *disk_cache_cookie;
+   void (*disk_cache_find_shader)(void *cookie,
+                                  struct lp_cached_code *cache,
+                                  unsigned char ir_sha1_cache_key[20]);
+   void (*disk_cache_insert_shader)(void *cookie,
+                                    struct lp_cached_code *cache,
+                                    unsigned char ir_sha1_cache_key[20]);
 
    void *driver_private;
 };
@@ -355,8 +419,9 @@ struct draw_vertex_info {
 };
 
 /* these flags are set if the primitive is a segment of a larger one */
-#define DRAW_SPLIT_BEFORE 0x1
-#define DRAW_SPLIT_AFTER  0x2
+#define DRAW_SPLIT_BEFORE        0x1
+#define DRAW_SPLIT_AFTER         0x2
+#define DRAW_LINE_LOOP_AS_STRIP  0x4
 
 struct draw_prim_info {
    boolean linear;
@@ -400,9 +465,8 @@ uint draw_current_shader_outputs(const struct draw_context *draw);
 uint draw_current_shader_position_output(const struct draw_context *draw);
 uint draw_current_shader_viewport_index_output(const struct draw_context *draw);
 uint draw_current_shader_clipvertex_output(const struct draw_context *draw);
-uint draw_current_shader_clipdistance_output(const struct draw_context *draw, int index);
+uint draw_current_shader_ccdistance_output(const struct draw_context *draw, int index);
 uint draw_current_shader_num_written_clipdistances(const struct draw_context *draw);
-uint draw_current_shader_culldistance_output(const struct draw_context *draw, int index);
 uint draw_current_shader_num_written_culldistances(const struct draw_context *draw);
 int draw_alloc_extra_vertex_attrib(struct draw_context *draw,
                                    uint semantic_name, uint semantic_index);
@@ -484,17 +548,16 @@ void draw_update_viewport_flags(struct draw_context *draw);
 
 /** 
  * Return index i from the index buffer.
- * If the index buffer would overflow we return the
- * maximum possible index.
+ * If the index buffer would overflow we return index 0.
  */
 #define DRAW_GET_IDX(_elts, _i)                   \
-   (((_i) >= draw->pt.user.eltMax) ? DRAW_MAX_FETCH_IDX : (_elts)[_i])
+   (((_i) >= draw->pt.user.eltMax) ? 0 : (_elts)[_i])
 
 /**
  * Return index of the given viewport clamping it
  * to be between 0 <= and < PIPE_MAX_VIEWPORTS
  */
-static INLINE unsigned
+static inline unsigned
 draw_clamp_viewport_idx(int idx)
 {
    return ((PIPE_MAX_VIEWPORTS > idx && idx >= 0) ? idx : 0);
@@ -505,12 +568,12 @@ draw_clamp_viewport_idx(int idx)
  * overflows then it returns the value from
  * the overflow_value variable.
  */
-static INLINE unsigned
+static inline unsigned
 draw_overflow_uadd(unsigned a, unsigned b,
                    unsigned overflow_value)
 {
    unsigned res = a + b;
-   if (res < a || res < b) {
+   if (res < a) {
       res = overflow_value;
    }
    return res;

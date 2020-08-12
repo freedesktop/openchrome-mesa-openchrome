@@ -24,12 +24,13 @@
 
 
 #include "glheader.h"
-#include "imports.h"
+
 #include "context.h"
 #include "depth.h"
 #include "enums.h"
 #include "macros.h"
 #include "mtypes.h"
+#include "state.h"
 
 
 /**********************************************************************/
@@ -57,37 +58,56 @@ _mesa_ClearDepthf( GLclampf depth )
 }
 
 
+static ALWAYS_INLINE void
+depth_func(struct gl_context *ctx, GLenum func, bool no_error)
+{
+   if (ctx->Depth.Func == func)
+      return;
+
+   if (!no_error) {
+      switch (func) {
+      case GL_LESS:    /* (default) pass if incoming z < stored z */
+      case GL_GEQUAL:
+      case GL_LEQUAL:
+      case GL_GREATER:
+      case GL_NOTEQUAL:
+      case GL_EQUAL:
+      case GL_ALWAYS:
+      case GL_NEVER:
+         break;
+      default:
+         _mesa_error(ctx, GL_INVALID_ENUM, "glDepth.Func");
+         return;
+      }
+   }
+
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH);
+   ctx->NewDriverState |= ctx->DriverFlags.NewDepth;
+   ctx->Depth.Func = func;
+   _mesa_update_allow_draw_out_of_order(ctx);
+
+   if (ctx->Driver.DepthFunc)
+      ctx->Driver.DepthFunc(ctx, func);
+}
+
+
 void GLAPIENTRY
-_mesa_DepthFunc( GLenum func )
+_mesa_DepthFunc_no_error(GLenum func)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   depth_func(ctx, func, true);
+}
+
+
+void GLAPIENTRY
+_mesa_DepthFunc(GLenum func)
 {
    GET_CURRENT_CONTEXT(ctx);
 
    if (MESA_VERBOSE & VERBOSE_API)
-      _mesa_debug(ctx, "glDepthFunc %s\n", _mesa_lookup_enum_by_nr(func));
+      _mesa_debug(ctx, "glDepthFunc %s\n", _mesa_enum_to_string(func));
 
-   switch (func) {
-   case GL_LESS:    /* (default) pass if incoming z < stored z */
-   case GL_GEQUAL:
-   case GL_LEQUAL:
-   case GL_GREATER:
-   case GL_NOTEQUAL:
-   case GL_EQUAL:
-   case GL_ALWAYS:
-   case GL_NEVER:
-      break;
-   default:
-      _mesa_error( ctx, GL_INVALID_ENUM, "glDepth.Func" );
-      return;
-   }
-
-   if (ctx->Depth.Func == func)
-      return;
-
-   FLUSH_VERTICES(ctx, _NEW_DEPTH);
-   ctx->Depth.Func = func;
-
-   if (ctx->Driver.DepthFunc)
-      ctx->Driver.DepthFunc( ctx, func );
+   depth_func(ctx, func, false);
 }
 
 
@@ -107,8 +127,10 @@ _mesa_DepthMask( GLboolean flag )
    if (ctx->Depth.Mask == flag)
       return;
 
-   FLUSH_VERTICES(ctx, _NEW_DEPTH);
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH);
+   ctx->NewDriverState |= ctx->DriverFlags.NewDepth;
    ctx->Depth.Mask = flag;
+   _mesa_update_allow_draw_out_of_order(ctx);
 
    if (ctx->Driver.DepthMask)
       ctx->Driver.DepthMask( ctx, flag );
@@ -132,13 +154,14 @@ _mesa_DepthBoundsEXT( GLclampd zmin, GLclampd zmax )
       return;
    }
 
-   zmin = CLAMP(zmin, 0.0, 1.0);
-   zmax = CLAMP(zmax, 0.0, 1.0);
+   zmin = SATURATE(zmin);
+   zmax = SATURATE(zmax);
 
    if (ctx->Depth.BoundsMin == zmin && ctx->Depth.BoundsMax == zmax)
       return;
 
-   FLUSH_VERTICES(ctx, _NEW_DEPTH);
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH);
+   ctx->NewDriverState |= ctx->DriverFlags.NewDepth;
    ctx->Depth.BoundsMin = (GLfloat) zmin;
    ctx->Depth.BoundsMax = (GLfloat) zmax;
 }

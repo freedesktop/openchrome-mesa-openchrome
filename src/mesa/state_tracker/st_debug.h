@@ -32,12 +32,10 @@
 #include "pipe/p_compiler.h"
 #include "util/u_debug.h"
 
-extern void
-st_print_current(void);
-
+struct st_context;
 
 #define DEBUG_MESA      0x1
-#define DEBUG_TGSI      0x2
+#define DEBUG_PRINT_IR  0x2
 #define DEBUG_CONSTANTS 0x4
 #define DEBUG_PIPE      0x8
 #define DEBUG_TEX       0x10
@@ -47,18 +45,17 @@ st_print_current(void);
 #define DEBUG_DRAW      0x100
 #define DEBUG_BUFFER    0x200
 #define DEBUG_WIREFRAME 0x400
+#define DEBUG_PRECOMPILE   0x800
+#define DEBUG_GREMEDY   0x1000
+#define DEBUG_NOREADPIXCACHE 0x2000
 
-#ifdef DEBUG
 extern int ST_DEBUG;
-#define DBSTR(x) x
-#else
-#define ST_DEBUG 0
-#define DBSTR(x) ""
-#endif
 
 void st_debug_init( void );
 
-static INLINE void
+void st_update_debug_callback(struct st_context *st);
+
+static inline void
 ST_DBG( unsigned flag, const char *fmt, ... )
 {
     if (ST_DEBUG & flag)

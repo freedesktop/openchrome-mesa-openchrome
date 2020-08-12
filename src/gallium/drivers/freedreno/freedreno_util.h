@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
  *
@@ -29,8 +27,8 @@
 #ifndef FREEDRENO_UTIL_H_
 #define FREEDRENO_UTIL_H_
 
-#include <freedreno_drmif.h>
-#include <freedreno_ringbuffer.h>
+#include "drm/freedreno_drmif.h"
+#include "drm/freedreno_ringbuffer.h"
 
 #include "pipe/p_format.h"
 #include "pipe/p_state.h"
@@ -40,33 +38,58 @@
 #include "util/u_dynarray.h"
 #include "util/u_pack_color.h"
 
+#include "disasm.h"
 #include "adreno_common.xml.h"
 #include "adreno_pm4.xml.h"
 
 enum adreno_rb_depth_format fd_pipe2depth(enum pipe_format format);
 enum pc_di_index_size fd_pipe2index(enum pipe_format format);
+enum pipe_format fd_gmem_restore_format(enum pipe_format format);
 enum adreno_rb_blend_factor fd_blend_factor(unsigned factor);
 enum adreno_pa_su_sc_draw fd_polygon_mode(unsigned mode);
 enum adreno_stencil_op fd_stencil_op(unsigned op);
 
 #define A3XX_MAX_MIP_LEVELS 14
-/* TBD if it is same on a2xx, but for now: */
-#define MAX_MIP_LEVELS A3XX_MAX_MIP_LEVELS
 
-#define FD_DBG_MSGS     0x0001
-#define FD_DBG_DISASM   0x0002
-#define FD_DBG_DCLEAR   0x0004
-#define FD_DBG_FLUSH    0x0008
-#define FD_DBG_NOSCIS   0x0010
-#define FD_DBG_DIRECT   0x0020
-#define FD_DBG_NOBYPASS 0x0040
-#define FD_DBG_FRAGHALF 0x0080
-#define FD_DBG_NOBIN    0x0100
-#define FD_DBG_NOOPT    0x0200
-#define FD_DBG_OPTMSGS  0x0400
-#define FD_DBG_OPTDUMP  0x0800
-#define FD_DBG_GLSL130  0x1000
-#define FD_DBG_NOCP     0x2000
+#define A2XX_MAX_RENDER_TARGETS 1
+#define A3XX_MAX_RENDER_TARGETS 4
+#define A4XX_MAX_RENDER_TARGETS 8
+#define A5XX_MAX_RENDER_TARGETS 8
+#define A6XX_MAX_RENDER_TARGETS 8
+
+#define MAX_RENDER_TARGETS A6XX_MAX_RENDER_TARGETS
+
+enum fd_debug_flag {
+	FD_DBG_MSGS         = BITFIELD_BIT(0),
+	FD_DBG_DISASM       = BITFIELD_BIT(1),
+	FD_DBG_DCLEAR       = BITFIELD_BIT(2),
+	FD_DBG_DDRAW        = BITFIELD_BIT(3),
+	FD_DBG_NOSCIS       = BITFIELD_BIT(4),
+	FD_DBG_DIRECT       = BITFIELD_BIT(5),
+	FD_DBG_NOBYPASS     = BITFIELD_BIT(6),
+	FD_DBG_LOG          = BITFIELD_BIT(7),
+	FD_DBG_NOBIN        = BITFIELD_BIT(8),
+	FD_DBG_NOGMEM       = BITFIELD_BIT(9),
+	/* BIT(10) */
+	FD_DBG_SHADERDB     = BITFIELD_BIT(11),
+	FD_DBG_FLUSH        = BITFIELD_BIT(12),
+	FD_DBG_DEQP         = BITFIELD_BIT(13),
+	FD_DBG_INORDER      = BITFIELD_BIT(14),
+	FD_DBG_BSTAT        = BITFIELD_BIT(15),
+	FD_DBG_NOGROW       = BITFIELD_BIT(16),
+	FD_DBG_LRZ          = BITFIELD_BIT(17),
+	FD_DBG_NOINDR       = BITFIELD_BIT(18),
+	FD_DBG_NOBLIT       = BITFIELD_BIT(19),
+	FD_DBG_HIPRIO       = BITFIELD_BIT(20),
+	FD_DBG_TTILE        = BITFIELD_BIT(21),
+	FD_DBG_PERFC        = BITFIELD_BIT(22),
+	FD_DBG_NOUBWC       = BITFIELD_BIT(23),
+	FD_DBG_NOLRZ        = BITFIELD_BIT(24),
+	FD_DBG_NOTILE       = BITFIELD_BIT(25),
+	FD_DBG_LAYOUT       = BITFIELD_BIT(26),
+	FD_DBG_NOFP16       = BITFIELD_BIT(27),
+	FD_DBG_NOHW         = BITFIELD_BIT(28),
+};
 
 extern int fd_mesa_debug;
 extern bool fd_binning_enabled;
@@ -76,8 +99,6 @@ extern bool fd_binning_enabled;
 			debug_printf("%s:%d: "fmt "\n", \
 				__FUNCTION__, __LINE__, ##__VA_ARGS__); } while (0)
 
-#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-
 /* for conditionally setting boolean flag(s): */
 #define COND(bool, val) ((bool) ? (val) : 0)
 
@@ -85,14 +106,33 @@ extern bool fd_binning_enabled;
 
 static inline uint32_t DRAW(enum pc_di_primtype prim_type,
 		enum pc_di_src_sel source_select, enum pc_di_index_size index_size,
-		enum pc_di_vis_cull_mode vis_cull_mode)
+		enum pc_di_vis_cull_mode vis_cull_mode,
+		uint8_t instances)
 {
 	return (prim_type         << 0) |
 			(source_select     << 6) |
 			((index_size & 1)  << 11) |
 			((index_size >> 1) << 13) |
 			(vis_cull_mode     << 9) |
-			(1                 << 14);
+			(1                 << 14) |
+			(instances         << 24);
+}
+
+static inline uint32_t DRAW_A20X(enum pc_di_primtype prim_type,
+		enum pc_di_face_cull_sel faceness_cull_select,
+		enum pc_di_src_sel source_select, enum pc_di_index_size index_size,
+		bool pre_fetch_cull_enable,
+		bool grp_cull_enable,
+		uint16_t count)
+{
+	return (prim_type         << 0) |
+			(source_select     << 6) |
+			(faceness_cull_select << 8) |
+			((index_size & 1)  << 11) |
+			((index_size >> 1) << 13) |
+			(pre_fetch_cull_enable << 14) |
+			(grp_cull_enable << 15) |
+			(count         << 16);
 }
 
 /* for tracking cmdstream positions that need to be patched: */
@@ -111,19 +151,59 @@ pipe_surface_format(struct pipe_surface *psurf)
 	return psurf->format;
 }
 
-#define LOG_DWORDS 0
+static inline bool
+fd_surface_half_precision(const struct pipe_surface *psurf)
+{
+	enum pipe_format format;
+
+	if (!psurf)
+		return true;
+
+	format = psurf->format;
+
+	/* colors are provided in consts, which go through cov.f32f16, which will
+	 * break these values
+	 */
+	if (util_format_is_pure_integer(format))
+		return false;
+
+	/* avoid losing precision on 32-bit float formats */
+	if (util_format_is_float(format) &&
+		util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, 0) == 32)
+		return false;
+
+	return true;
+}
+
+static inline unsigned
+fd_sampler_first_level(const struct pipe_sampler_view *view)
+{
+	if (view->target == PIPE_BUFFER)
+		return 0;
+	return view->u.tex.first_level;
+}
+
+static inline unsigned
+fd_sampler_last_level(const struct pipe_sampler_view *view)
+{
+	if (view->target == PIPE_BUFFER)
+		return 0;
+	return view->u.tex.last_level;
+}
+
+static inline bool
+fd_half_precision(struct pipe_framebuffer_state *pfb)
+{
+	unsigned i;
+
+	for (i = 0; i < pfb->nr_cbufs; i++)
+		if (!fd_surface_half_precision(pfb->cbufs[i]))
+			return false;
+
+	return true;
+}
 
 static inline void emit_marker(struct fd_ringbuffer *ring, int scratch_idx);
-
-static inline void
-OUT_RING(struct fd_ringbuffer *ring, uint32_t data)
-{
-	if (LOG_DWORDS) {
-		DBG("ring[%p]: OUT_RING   %04x:  %08x", ring,
-				(uint32_t)(ring->cur - ring->last_start), data);
-	}
-	*(ring->cur++) = data;
-}
 
 /* like OUT_RING() but appends a cmdstream patch point to 'buf' */
 static inline void
@@ -132,7 +212,7 @@ OUT_RINGP(struct fd_ringbuffer *ring, uint32_t data,
 {
 	if (LOG_DWORDS) {
 		DBG("ring[%p]: OUT_RINGP  %04x:  %08x", ring,
-				(uint32_t)(ring->cur - ring->last_start), data);
+				(uint32_t)(ring->cur - ring->start), data);
 	}
 	util_dynarray_append(buf, struct fd_cs_patch, ((struct fd_cs_patch){
 		.cs  = ring->cur++,
@@ -141,78 +221,12 @@ OUT_RINGP(struct fd_ringbuffer *ring, uint32_t data,
 }
 
 static inline void
-OUT_RELOC(struct fd_ringbuffer *ring, struct fd_bo *bo,
-		uint32_t offset, uint32_t or, int32_t shift)
+__OUT_IB(struct fd_ringbuffer *ring, bool prefetch, struct fd_ringbuffer *target)
 {
-	if (LOG_DWORDS) {
-		DBG("ring[%p]: OUT_RELOC   %04x:  %p+%u << %d", ring,
-				(uint32_t)(ring->cur - ring->last_start), bo, offset, shift);
-	}
-	fd_ringbuffer_reloc(ring, &(struct fd_reloc){
-		.bo = bo,
-		.flags = FD_RELOC_READ,
-		.offset = offset,
-		.or = or,
-		.shift = shift,
-	});
-}
+	if (target->cur == target->start)
+		return;
 
-static inline void
-OUT_RELOCW(struct fd_ringbuffer *ring, struct fd_bo *bo,
-		uint32_t offset, uint32_t or, int32_t shift)
-{
-	if (LOG_DWORDS) {
-		DBG("ring[%p]: OUT_RELOCW  %04x:  %p+%u << %d", ring,
-				(uint32_t)(ring->cur - ring->last_start), bo, offset, shift);
-	}
-	fd_ringbuffer_reloc(ring, &(struct fd_reloc){
-		.bo = bo,
-		.flags = FD_RELOC_READ | FD_RELOC_WRITE,
-		.offset = offset,
-		.or = or,
-		.shift = shift,
-	});
-}
-
-static inline void BEGIN_RING(struct fd_ringbuffer *ring, uint32_t ndwords)
-{
-	if ((ring->cur + ndwords) >= ring->end) {
-		/* this probably won't really work if we have multiple tiles..
-		 * but it is ok for 2d..  we might need different behavior
-		 * depending on 2d or 3d pipe.
-		 */
-		DBG("uh oh..");
-	}
-}
-
-static inline void
-OUT_PKT0(struct fd_ringbuffer *ring, uint16_t regindx, uint16_t cnt)
-{
-	BEGIN_RING(ring, cnt+1);
-	OUT_RING(ring, CP_TYPE0_PKT | ((cnt-1) << 16) | (regindx & 0x7FFF));
-}
-
-static inline void
-OUT_PKT3(struct fd_ringbuffer *ring, uint8_t opcode, uint16_t cnt)
-{
-	BEGIN_RING(ring, cnt+1);
-	OUT_RING(ring, CP_TYPE3_PKT | ((cnt-1) << 16) | ((opcode & 0xFF) << 8));
-}
-
-static inline void
-OUT_WFI(struct fd_ringbuffer *ring)
-{
-	OUT_PKT3(ring, CP_WAIT_FOR_IDLE, 1);
-	OUT_RING(ring, 0x00000000);
-}
-
-static inline void
-OUT_IB(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
-		struct fd_ringmarker *end)
-{
-	uint32_t dwords = fd_ringmarker_dwords(start, end);
-
-	assert(dwords > 0);
+	unsigned count = fd_ringbuffer_cmd_count(target);
 
 	/* for debug after a lock up, write a unique counter value
 	 * to scratch6 for each IB, to make it easier to match up
@@ -222,14 +236,39 @@ OUT_IB(struct fd_ringbuffer *ring, struct fd_ringmarker *start,
 	 */
 	emit_marker(ring, 6);
 
-	OUT_PKT3(ring, CP_INDIRECT_BUFFER_PFD, 2);
-	fd_ringbuffer_emit_reloc_ring(ring, start, end);
-	OUT_RING(ring, dwords);
+	for (unsigned i = 0; i < count; i++) {
+		uint32_t dwords;
+		OUT_PKT3(ring, prefetch ? CP_INDIRECT_BUFFER_PFE : CP_INDIRECT_BUFFER_PFD, 2);
+		dwords = fd_ringbuffer_emit_reloc_ring_full(ring, target, i) / 4;
+		assert(dwords > 0);
+		OUT_RING(ring, dwords);
+		OUT_PKT2(ring);
+	}
 
 	emit_marker(ring, 6);
 }
 
+static inline void
+__OUT_IB5(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
+{
+	if (target->cur == target->start)
+		return;
+
+	unsigned count = fd_ringbuffer_cmd_count(target);
+
+	for (unsigned i = 0; i < count; i++) {
+		uint32_t dwords;
+		OUT_PKT7(ring, CP_INDIRECT_BUFFER, 3);
+		dwords = fd_ringbuffer_emit_reloc_ring_full(ring, target, i) / 4;
+		assert(dwords > 0);
+		OUT_RING(ring, dwords);
+	}
+}
+
 /* CP_SCRATCH_REG4 is used to hold base address for query results: */
+// XXX annoyingly scratch regs move on a5xx.. and additionally different
+// packet types.. so freedreno_query_hw is going to need a bit of
+// rework..
 #define HW_QUERY_BASE_REG REG_AXXX_CP_SCRATCH_REG4
 
 static inline void
@@ -244,24 +283,77 @@ emit_marker(struct fd_ringbuffer *ring, int scratch_idx)
 	OUT_RING(ring, ++marker_cnt);
 }
 
-/* helper to get numeric value from environment variable..  mostly
- * just leaving this here because it is helpful to brute-force figure
- * out unknown formats, etc, which blob driver does not support:
- */
-static inline uint32_t env2u(const char *envvar)
-{
-	char *str = getenv(envvar);
-	if (str)
-		return strtoul(str, NULL, 0);
-	return 0;
-}
-
 static inline uint32_t
 pack_rgba(enum pipe_format format, const float *rgba)
 {
 	union util_color uc;
 	util_pack_color(rgba, format, &uc);
 	return uc.ui[0];
+}
+
+/*
+ * swap - swap value of @a and @b
+ */
+#define swap(a, b) \
+	do { __typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
+
+#define foreach_bit(b, mask) \
+	for (uint32_t _m = (mask), b; _m && ({(b) = u_bit_scan(&_m); (void)(b); 1;});)
+
+
+#define BIT(bit) (1u << bit)
+
+/*
+ * a3xx+ helpers:
+ */
+
+static inline enum a3xx_msaa_samples
+fd_msaa_samples(unsigned samples)
+{
+	switch (samples) {
+	default:
+		debug_assert(0);
+		/* fallthrough */
+	case 0:
+	case 1: return MSAA_ONE;
+	case 2: return MSAA_TWO;
+	case 4: return MSAA_FOUR;
+	case 8: return MSAA_EIGHT;
+	}
+}
+
+/*
+ * a4xx+ helpers:
+ */
+
+static inline enum a4xx_state_block
+fd4_stage2shadersb(gl_shader_stage type)
+{
+	switch (type) {
+	case MESA_SHADER_VERTEX:
+		return SB4_VS_SHADER;
+	case MESA_SHADER_FRAGMENT:
+		return SB4_FS_SHADER;
+	case MESA_SHADER_COMPUTE:
+	case MESA_SHADER_KERNEL:
+		return SB4_CS_SHADER;
+	default:
+		unreachable("bad shader type");
+		return ~0;
+	}
+}
+
+static inline enum a4xx_index_size
+fd4_size2indextype(unsigned index_size)
+{
+	switch (index_size) {
+	case 1: return INDEX4_SIZE_8_BIT;
+	case 2: return INDEX4_SIZE_16_BIT;
+	case 4: return INDEX4_SIZE_32_BIT;
+	}
+	DBG("unsupported index size: %d", index_size);
+	assert(0);
+	return INDEX4_SIZE_32_BIT;
 }
 
 #endif /* FREEDRENO_UTIL_H_ */

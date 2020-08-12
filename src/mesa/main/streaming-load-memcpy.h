@@ -29,5 +29,13 @@
 /* Copies memory from src to dst, using SSE 4.1's MOVNTDQA to get streaming
  * read performance from uncached memory.
  */
+
+#ifndef STREAMING_LOAD_MEMCPY_H
+#define STREAMING_LOAD_MEMCPY_H
+
+#include <stdlib.h>
+
 void
 _mesa_streaming_load_memcpy(void *restrict dst, void *restrict src, size_t len);
+
+#endif /* STREAMING_LOAD_MEMCPY_H */

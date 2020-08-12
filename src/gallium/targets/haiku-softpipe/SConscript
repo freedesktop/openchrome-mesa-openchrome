@@ -3,19 +3,18 @@ Import('*')
 env.Prepend(LIBS = [
     ws_haiku,
     st_haiku,
-    trace,
-    rbug,
     mesautil,
+    compiler,
     mesa,
     glsl,
+    nir,
+    spirv,
     gallium
 ])
 
 if True:
     env.Append(CPPDEFINES = [
         'GALLIUM_SOFTPIPE',
-        'GALLIUM_RBUG',
-        'GALLIUM_TRACE',
     ])
     env.Prepend(LIBS = [softpipe])
 
@@ -27,7 +26,7 @@ env.Append(CPPPATH = [
     '#/src/mesa/main',
     '#/include/HaikuGL',
     '#/src/gallium/winsys',
-    '#/src/gallium/state_trackers/hgl',
+    '#/src/gallium/frontends/hgl',
     '/boot/system/develop/headers/private',
 ])
 

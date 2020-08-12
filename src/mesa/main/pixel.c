@@ -28,15 +28,14 @@
  * Pixel transfer functions (glPixelZoom, glPixelMap, glPixelTransfer)
  */
 
+#include "c99_math.h"
 #include "glheader.h"
 #include "bufferobj.h"
-#include "colormac.h"
 #include "context.h"
 #include "macros.h"
 #include "pixel.h"
 #include "pbo.h"
 #include "mtypes.h"
-#include "main/dispatch.h"
 
 
 /**********************************************************************/
@@ -115,7 +114,7 @@ store_pixelmap(struct gl_context *ctx, GLenum map, GLsizei mapsize,
       /* special case */
       ctx->PixelMaps.StoS.Size = mapsize;
       for (i = 0; i < mapsize; i++) {
-         ctx->PixelMaps.StoS.Map[i] = (GLfloat)IROUND(values[i]);
+         ctx->PixelMaps.StoS.Map[i] = roundf(values[i]);
       }
       break;
    case GL_PIXEL_MAP_I_TO_I:
@@ -157,11 +156,10 @@ validate_pbo_access(struct gl_context *ctx,
 
    /* restore */
    _mesa_reference_buffer_object(ctx,
-                                 &ctx->DefaultPacking.BufferObj,
-                                 ctx->Shared->NullBufferObj);
+                                 &ctx->DefaultPacking.BufferObj, NULL);
 
    if (!ok) {
-      if (_mesa_is_bufferobj(pack->BufferObj)) {
+      if (pack->BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "gl[Get]PixelMap*v(out of bounds PBO access)");
       } else {
@@ -187,7 +185,7 @@ _mesa_PixelMapfv( GLenum map, GLsizei mapsize, const GLfloat *values )
 
    if (map >= GL_PIXEL_MAP_S_TO_S && map <= GL_PIXEL_MAP_I_TO_A) {
       /* test that mapsize is a power of two */
-      if (!_mesa_is_pow_two(mapsize)) {
+      if (!util_is_power_of_two_or_zero(mapsize)) {
 	 _mesa_error( ctx, GL_INVALID_VALUE, "glPixelMapfv(mapsize)" );
          return;
       }
@@ -202,7 +200,7 @@ _mesa_PixelMapfv( GLenum map, GLsizei mapsize, const GLfloat *values )
 
    values = (const GLfloat *) _mesa_map_pbo_source(ctx, &ctx->Unpack, values);
    if (!values) {
-      if (_mesa_is_bufferobj(ctx->Unpack.BufferObj)) {
+      if (ctx->Unpack.BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glPixelMapfv(PBO is mapped)");
       }
@@ -228,7 +226,7 @@ _mesa_PixelMapuiv(GLenum map, GLsizei mapsize, const GLuint *values )
 
    if (map >= GL_PIXEL_MAP_S_TO_S && map <= GL_PIXEL_MAP_I_TO_A) {
       /* test that mapsize is a power of two */
-      if (!_mesa_is_pow_two(mapsize)) {
+      if (!util_is_power_of_two_or_zero(mapsize)) {
 	 _mesa_error( ctx, GL_INVALID_VALUE, "glPixelMapuiv(mapsize)" );
          return;
       }
@@ -243,7 +241,7 @@ _mesa_PixelMapuiv(GLenum map, GLsizei mapsize, const GLuint *values )
 
    values = (const GLuint *) _mesa_map_pbo_source(ctx, &ctx->Unpack, values);
    if (!values) {
-      if (_mesa_is_bufferobj(ctx->Unpack.BufferObj)) {
+      if (ctx->Unpack.BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glPixelMapuiv(PBO is mapped)");
       }
@@ -283,8 +281,8 @@ _mesa_PixelMapusv(GLenum map, GLsizei mapsize, const GLushort *values )
 
    if (map >= GL_PIXEL_MAP_S_TO_S && map <= GL_PIXEL_MAP_I_TO_A) {
       /* test that mapsize is a power of two */
-      if (!_mesa_is_pow_two(mapsize)) {
-	 _mesa_error( ctx, GL_INVALID_VALUE, "glPixelMapuiv(mapsize)" );
+      if (!util_is_power_of_two_or_zero(mapsize)) {
+	 _mesa_error( ctx, GL_INVALID_VALUE, "glPixelMapusv(mapsize)" );
          return;
       }
    }
@@ -298,7 +296,7 @@ _mesa_PixelMapusv(GLenum map, GLsizei mapsize, const GLushort *values )
 
    values = (const GLushort *) _mesa_map_pbo_source(ctx, &ctx->Unpack, values);
    if (!values) {
-      if (_mesa_is_bufferobj(ctx->Unpack.BufferObj)) {
+      if (ctx->Unpack.BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glPixelMapusv(PBO is mapped)");
       }
@@ -347,7 +345,7 @@ _mesa_GetnPixelMapfvARB( GLenum map, GLsizei bufSize, GLfloat *values )
 
    values = (GLfloat *) _mesa_map_pbo_dest(ctx, &ctx->Pack, values);
    if (!values) {
-      if (_mesa_is_bufferobj(ctx->Pack.BufferObj)) {
+      if (ctx->Pack.BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glGetPixelMapfv(PBO is mapped)");
       }
@@ -396,7 +394,7 @@ _mesa_GetnPixelMapuivARB( GLenum map, GLsizei bufSize, GLuint *values )
 
    values = (GLuint *) _mesa_map_pbo_dest(ctx, &ctx->Pack, values);
    if (!values) {
-      if (_mesa_is_bufferobj(ctx->Pack.BufferObj)) {
+      if (ctx->Pack.BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glGetPixelMapuiv(PBO is mapped)");
       }
@@ -445,7 +443,7 @@ _mesa_GetnPixelMapusvARB( GLenum map, GLsizei bufSize, GLushort *values )
 
    values = (GLushort *) _mesa_map_pbo_dest(ctx, &ctx->Pack, values);
    if (!values) {
-      if (_mesa_is_bufferobj(ctx->Pack.BufferObj)) {
+      if (ctx->Pack.BufferObj) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glGetPixelMapusv(PBO is mapped)");
       }
@@ -456,12 +454,12 @@ _mesa_GetnPixelMapusvARB( GLenum map, GLsizei bufSize, GLushort *values )
    /* special cases */
    case GL_PIXEL_MAP_I_TO_I:
       for (i = 0; i < mapsize; i++) {
-         values[i] = (GLushort) CLAMP(ctx->PixelMaps.ItoI.Map[i], 0.0, 65535.);
+         values[i] = (GLushort) CLAMP(ctx->PixelMaps.ItoI.Map[i], 0.0F, 65535.0F);
       }
       break;
    case GL_PIXEL_MAP_S_TO_S:
       for (i = 0; i < mapsize; i++) {
-         values[i] = (GLushort) CLAMP(ctx->PixelMaps.StoS.Map[i], 0.0, 65535.);
+         values[i] = (GLushort) CLAMP(ctx->PixelMaps.StoS.Map[i], 0.0F, 65535.0F);
       }
       break;
    default:
@@ -599,12 +597,13 @@ _mesa_PixelTransferi( GLenum pname, GLint param )
 /*****                    State Management                        *****/
 /**********************************************************************/
 
-/*
- * Return a bitmask of IMAGE_*_BIT flags which to indicate which
- * pixel transfer operations are enabled.
+
+/**
+ * Update mesa pixel transfer derived state to indicate which operations are
+ * enabled.
  */
-static void
-update_image_transfer_state(struct gl_context *ctx)
+void
+_mesa_update_pixel( struct gl_context *ctx )
 {
    GLuint mask = 0;
 
@@ -621,16 +620,6 @@ update_image_transfer_state(struct gl_context *ctx)
       mask |= IMAGE_MAP_COLOR_BIT;
 
    ctx->_ImageTransferState = mask;
-}
-
-
-/**
- * Update mesa pixel transfer derived state.
- */
-void _mesa_update_pixel( struct gl_context *ctx, GLuint new_state )
-{
-   if (new_state & _NEW_PIXEL)
-      update_image_transfer_state(ctx);
 }
 
 

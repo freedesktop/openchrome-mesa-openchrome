@@ -23,13 +23,15 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <stdio.h>
+#include "errors.h"
 #include "mtypes.h"
 #include "attrib.h"
-#include "colormac.h"
 #include "enums.h"
 #include "formats.h"
 #include "hash.h"
-#include "imports.h"
+
+#include "macros.h"
 #include "debug.h"
 #include "get.h"
 #include "pixelstore.h"
@@ -58,8 +60,8 @@ tex_target_name(GLenum tgt)
       { GL_TEXTURE_EXTERNAL_OES, "GL_TEXTURE_EXTERNAL_OES" }
    };
    GLuint i;
-   STATIC_ASSERT(Elements(tex_targets) == NUM_TEXTURE_TARGETS);
-   for (i = 0; i < Elements(tex_targets); i++) {
+   STATIC_ASSERT(ARRAY_SIZE(tex_targets) == NUM_TEXTURE_TARGETS);
+   for (i = 0; i < ARRAY_SIZE(tex_targets); i++) {
       if (tex_targets[i].target == tgt)
          return tex_targets[i].name;
    }
@@ -71,7 +73,7 @@ void
 _mesa_print_state( const char *msg, GLuint state )
 {
    _mesa_debug(NULL,
-	   "%s: (0x%x) %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	   "%s: (0x%x) %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 	   msg,
 	   state,
 	   (state & _NEW_MODELVIEW)       ? "ctx->ModelView, " : "",
@@ -79,7 +81,6 @@ _mesa_print_state( const char *msg, GLuint state )
 	   (state & _NEW_TEXTURE_MATRIX)  ? "ctx->TextureMatrix, " : "",
 	   (state & _NEW_COLOR)           ? "ctx->Color, " : "",
 	   (state & _NEW_DEPTH)           ? "ctx->Depth, " : "",
-	   (state & _NEW_EVAL)            ? "ctx->Eval/EvalMap, " : "",
 	   (state & _NEW_FOG)             ? "ctx->Fog, " : "",
 	   (state & _NEW_HINT)            ? "ctx->Hint, " : "",
 	   (state & _NEW_LIGHT)           ? "ctx->Light, " : "",
@@ -90,10 +91,10 @@ _mesa_print_state( const char *msg, GLuint state )
 	   (state & _NEW_POLYGONSTIPPLE)  ? "ctx->PolygonStipple, " : "",
 	   (state & _NEW_SCISSOR)         ? "ctx->Scissor, " : "",
 	   (state & _NEW_STENCIL)         ? "ctx->Stencil, " : "",
-	   (state & _NEW_TEXTURE)         ? "ctx->Texture, " : "",
+	   (state & _NEW_TEXTURE_OBJECT)  ? "ctx->Texture(Object), " : "",
 	   (state & _NEW_TRANSFORM)       ? "ctx->Transform, " : "",
 	   (state & _NEW_VIEWPORT)        ? "ctx->Viewport, " : "",
-	   (state & _NEW_ARRAY)           ? "ctx->Array, " : "",
+           (state & _NEW_TEXTURE_STATE)   ? "ctx->Texture(State), " : "",
 	   (state & _NEW_RENDERMODE)      ? "ctx->RenderMode, " : "",
 	   (state & _NEW_BUFFERS)         ? "ctx->Visual, ctx->DrawBuffer,, " : "");
 }
@@ -117,11 +118,6 @@ void _mesa_print_info( struct gl_context *ctx )
     */
    _mesa_debug(NULL, "Mesa GL_EXTENSIONS = %s\n", ctx->Extensions.String);
 
-#if defined(THREADS)
-   _mesa_debug(NULL, "Mesa thread-safe: YES\n");
-#else
-   _mesa_debug(NULL, "Mesa thread-safe: NO\n");
-#endif
 #if defined(USE_X86_ASM)
    _mesa_debug(NULL, "Mesa x86-optimized: YES\n");
 #else
@@ -143,7 +139,7 @@ void _mesa_print_info( struct gl_context *ctx )
 static void
 set_verbose_flags(const char *str)
 {
-#ifdef DEBUG
+#ifndef NDEBUG
    struct option {
       const char *name;
       GLbitfield flag;
@@ -168,7 +164,7 @@ set_verbose_flags(const char *str)
       return;
 
    MESA_VERBOSE = 0x0;
-   for (i = 0; i < Elements(opts); i++) {
+   for (i = 0; i < ARRAY_SIZE(opts); i++) {
       if (strstr(str, opts[i].name) || strcmp(str, "all") == 0)
          MESA_VERBOSE |= opts[i].flag;
    }
@@ -184,7 +180,7 @@ set_verbose_flags(const char *str)
 static void
 set_debug_flags(const char *str)
 {
-#ifdef DEBUG
+#ifndef NDEBUG
    struct option {
       const char *name;
       GLbitfield flag;
@@ -193,7 +189,8 @@ set_debug_flags(const char *str)
       { "silent", DEBUG_SILENT }, /* turn off debug messages */
       { "flush", DEBUG_ALWAYS_FLUSH }, /* flush after each drawing command */
       { "incomplete_tex", DEBUG_INCOMPLETE_TEXTURE },
-      { "incomplete_fbo", DEBUG_INCOMPLETE_FBO }
+      { "incomplete_fbo", DEBUG_INCOMPLETE_FBO },
+      { "context", DEBUG_CONTEXT } /* force set GL_CONTEXT_FLAG_DEBUG_BIT flag */
    };
    GLuint i;
 
@@ -201,7 +198,7 @@ set_debug_flags(const char *str)
       return;
 
    MESA_DEBUG_FLAGS = 0x0;
-   for (i = 0; i < Elements(opts); i++) {
+   for (i = 0; i < ARRAY_SIZE(opts); i++) {
       if (strstr(str, opts[i].name))
          MESA_DEBUG_FLAGS |= opts[i].flag;
    }
@@ -212,7 +209,7 @@ set_debug_flags(const char *str)
 /**
  * Initialize debugging variables from env vars.
  */
-void 
+void
 _mesa_init_debug( struct gl_context *ctx )
 {
    set_debug_flags(getenv("MESA_DEBUG"));
@@ -237,6 +234,11 @@ write_ppm(const char *filename, const GLubyte *buffer, int width, int height,
       fprintf(f,"255\n");
       fclose(f);
       f = fopen( filename, "ab" );  /* reopen in binary append mode */
+      if (!f) {
+         fprintf(stderr, "Error while reopening %s in write_ppm()\n",
+                 filename);
+         return;
+      }
       for (y=0; y < height; y++) {
          for (x = 0; x < width; x++) {
             int yy = invert ? (height - 1 - y) : y;
@@ -276,10 +278,12 @@ write_texture_image(struct gl_texture_object *texObj,
       store = ctx->Pack; /* save */
       ctx->Pack = ctx->DefaultPacking;
 
-      ctx->Driver.GetTexImage(ctx, GL_RGBA, GL_UNSIGNED_BYTE, buffer, img);
+      ctx->Driver.GetTexSubImage(ctx,
+                                 0, 0, 0, img->Width, img->Height, img->Depth,
+                                 GL_RGBA, GL_UNSIGNED_BYTE, buffer, img);
 
       /* make filename */
-      _mesa_snprintf(s, sizeof(s), "/tmp/tex%u.l%u.f%u.ppm", texObj->Name, level, face);
+      snprintf(s, sizeof(s), "/tmp/tex%u.l%u.f%u.ppm", texObj->Name, level, face);
 
       printf("  Writing image level %u to %s\n", level, s);
       write_ppm(s, buffer, img->Width, img->Height, 4, 0, 1, 2, GL_FALSE);
@@ -302,7 +306,7 @@ _mesa_write_renderbuffer_image(const struct gl_renderbuffer *rb)
    char s[100];
    GLenum format, type;
 
-   if (rb->_BaseFormat == GL_RGB || 
+   if (rb->_BaseFormat == GL_RGB ||
        rb->_BaseFormat == GL_RGBA) {
       format = GL_RGBA;
       type = GL_UNSIGNED_BYTE;
@@ -325,8 +329,8 @@ _mesa_write_renderbuffer_image(const struct gl_renderbuffer *rb)
                           format, type, &ctx->DefaultPacking, buffer);
 
    /* make filename */
-   _mesa_snprintf(s, sizeof(s), "/tmp/renderbuffer%u.ppm", rb->Name);
-   _mesa_snprintf(s, sizeof(s), "C:\\renderbuffer%u.ppm", rb->Name);
+   snprintf(s, sizeof(s), "/tmp/renderbuffer%u.ppm", rb->Name);
+   snprintf(s, sizeof(s), "C:\\renderbuffer%u.ppm", rb->Name);
 
    printf("  Writing renderbuffer image to %s\n", s);
 
@@ -415,7 +419,7 @@ dump_renderbuffer(const struct gl_renderbuffer *rb, GLboolean writeImage)
 {
    printf("Renderbuffer %u: %u x %u  IntFormat = %s\n",
 	  rb->Name, rb->Width, rb->Height,
-	  _mesa_lookup_enum_by_nr(rb->InternalFormat));
+	  _mesa_enum_to_string(rb->InternalFormat));
    if (writeImage) {
       _mesa_write_renderbuffer_image(rb);
    }
@@ -620,8 +624,7 @@ _mesa_print_texture(struct gl_context *ctx, struct gl_texture_image *img)
          case MESA_FORMAT_I_UNORM8:
             c = 1;
             break;
-         case MESA_FORMAT_L8A8_UNORM:
-         case MESA_FORMAT_A8L8_UNORM:
+         case MESA_FORMAT_LA_UNORM8:
             c = 2;
             break;
          case MESA_FORMAT_BGR_UNORM8:

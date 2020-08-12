@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009-2012 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2015 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -32,6 +32,7 @@
  */
 
 #ifndef VMW_SHADER_H_
+#define VMW_SHADER_H_
 
 #include "pipe/p_compiler.h"
 #include "util/u_atomic.h"
@@ -47,14 +48,14 @@ struct vmw_svga_winsys_shader
    uint32_t shid;
 };
 
-static INLINE struct svga_winsys_gb_shader *
+static inline struct svga_winsys_gb_shader *
 svga_winsys_shader(struct vmw_svga_winsys_shader *shader)
 {
    assert(!shader || shader->shid != SVGA3D_INVALID_ID);
    return (struct svga_winsys_gb_shader *)shader;
 }
 
-static INLINE struct vmw_svga_winsys_shader *
+static inline struct vmw_svga_winsys_shader *
 vmw_svga_winsys_shader(struct svga_winsys_gb_shader *shader)
 {
    return (struct vmw_svga_winsys_shader *)shader;
@@ -63,5 +64,13 @@ vmw_svga_winsys_shader(struct svga_winsys_gb_shader *shader)
 void
 vmw_svga_winsys_shader_reference(struct vmw_svga_winsys_shader **pdst,
                                   struct vmw_svga_winsys_shader *src);
+
+struct vmw_svga_winsys_shader *
+vmw_svga_shader_create(struct svga_winsys_screen *sws,
+                       SVGA3dShaderType type,
+                       const uint32 *bytecode,
+                       uint32 bytecodeLen,
+                       const SVGA3dDXShaderSignatureHeader *sgnInfo,
+                       uint32 sgnLen);
 
 #endif /* VMW_SHADER_H_ */

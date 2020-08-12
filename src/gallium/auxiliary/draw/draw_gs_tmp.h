@@ -12,7 +12,6 @@
    const boolean quads_flatshade_last = FALSE;                    \
    const boolean last_vertex_last = !gs->draw->rasterizer->flatshade_first;  \
    do {                                                           \
-      debug_assert(input_prims->primitive_count == 1);            \
       switch (prim) {                                             \
       case PIPE_PRIM_QUADS:                                       \
       case PIPE_PRIM_QUAD_STRIP:                                  \
@@ -22,7 +21,7 @@
       default:                                                    \
          break;                                                   \
       }                                                           \
-   } while (0)                                                    \
+   } while (0)
 
 #define POINT(i0)                             gs_point(gs,i0)
 #define LINE(flags,i0,i1)                     gs_line(gs,i0,i1)

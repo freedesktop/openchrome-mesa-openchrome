@@ -7,24 +7,12 @@
 
 #ifdef __arch64__
 #define LDPTR		ldx
-#define MAT_M		0x00
-#define MAT_INV		0x08
-#define V4F_DATA	0x00
-#define V4F_START	0x08
-#define V4F_COUNT	0x10
-#define V4F_STRIDE	0x14
-#define V4F_SIZE	0x18
-#define V4F_FLAGS	0x1c
+#define MATH_ASM_PTR_SIZE 8
+#include "math/m_vector_asm.h"
 #else
 #define LDPTR		ld
-#define MAT_M		0x00
-#define MAT_INV		0x04
-#define V4F_DATA	0x00
-#define V4F_START	0x04
-#define V4F_COUNT	0x08
-#define V4F_STRIDE	0x0c
-#define V4F_SIZE	0x10
-#define V4F_FLAGS	0x14
+#define MATH_ASM_PTR_SIZE 4
+#include "math/m_vector_asm.h"
 #endif
 
 #define VEC_SIZE_1   	1
@@ -151,7 +139,7 @@
 #define LDMATRIX_0_5_10(BASE) 			\
 	ld	[BASE + ( 0 * 0x4)], M0;	\
 	ld	[BASE + ( 5 * 0x4)], M5;	\
-	ld	[BASE + (10 * 0x4)], M10;	\
+	ld	[BASE + (10 * 0x4)], M10;
 
 #define LDMATRIX_0_5_10_12_13_14(BASE) 		\
 	ld	[BASE + ( 0 * 0x4)], M0;	\

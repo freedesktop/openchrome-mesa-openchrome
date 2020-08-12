@@ -32,7 +32,7 @@
  * in our shader code, and this stores the table for doing so.
  */
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/macros.h"
 
 #include "vc4_context.h"
@@ -61,10 +61,10 @@ struct vc4_format {
 };
 
 #define SWIZ(x,y,z,w) {          \
-        UTIL_FORMAT_SWIZZLE_##x, \
-        UTIL_FORMAT_SWIZZLE_##y, \
-        UTIL_FORMAT_SWIZZLE_##z, \
-        UTIL_FORMAT_SWIZZLE_##w  \
+        PIPE_SWIZZLE_##x, \
+        PIPE_SWIZZLE_##y, \
+        PIPE_SWIZZLE_##z, \
+        PIPE_SWIZZLE_##w  \
 }
 
 #define FORMAT(pipe, rt, tex, swiz)                                     \
@@ -83,6 +83,8 @@ static const struct vc4_format vc4_format_table[] = {
 
         FORMAT(B5G6R5_UNORM, RGB565, RGB565, SWIZ(X, Y, Z, 1)),
 
+        FORMAT(ETC1_RGB8, NO, ETC1, SWIZ(X, Y, Z, 1)),
+
         /* Depth sampling will be handled by doing nearest filtering and not
          * unpacking the RGBA value.
          */
@@ -92,9 +94,8 @@ static const struct vc4_format vc4_format_table[] = {
         FORMAT(B4G4R4A4_UNORM, NO, RGBA4444, SWIZ(Y, Z, W, X)),
         FORMAT(B4G4R4X4_UNORM, NO, RGBA4444, SWIZ(Y, Z, W, 1)),
 
-        /* It looks like 5551 in the hardware is the other way around from
-         * gallium.
-         */
+        FORMAT(A1B5G5R5_UNORM, NO, RGBA5551, SWIZ(X, Y, Z, W)),
+        FORMAT(X1B5G5R5_UNORM, NO, RGBA5551, SWIZ(X, Y, Z, 1)),
 
         FORMAT(A8_UNORM, NO, ALPHA, SWIZ(0, 0, 0, W)),
         FORMAT(L8_UNORM, NO, ALPHA, SWIZ(W, W, W, 1)),
@@ -108,7 +109,7 @@ static const struct vc4_format vc4_format_table[] = {
 static const struct vc4_format *
 get_format(enum pipe_format f)
 {
-        if (f > ARRAY_SIZE(vc4_format_table) ||
+        if (f >= ARRAY_SIZE(vc4_format_table) ||
             !vc4_format_table[f].present)
                 return NULL;
         else

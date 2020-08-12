@@ -274,6 +274,8 @@ LValue::isUniform() const
    if (defs.size() > 1)
       return false;
    Instruction *insn = getInsn();
+   if (!insn)
+      return false;
    // let's not try too hard here for now ...
    return !insn->srcExists(1) && insn->getSrc(0)->isUniform();
 }
@@ -393,6 +395,9 @@ ImmediateValue::isInteger(const int i) const
    case TYPE_S32:
    case TYPE_U32:
       return reg.data.s32 == i; // as if ...
+   case TYPE_S64:
+   case TYPE_U64:
+      return reg.data.s64 == i; // as if ...
    case TYPE_F32:
       return reg.data.f32 == static_cast<float>(i);
    case TYPE_F64:
@@ -420,13 +425,10 @@ ImmediateValue::isNegative() const
 bool
 ImmediateValue::isPow2() const
 {
-   switch (reg.type) {
-   case TYPE_U8:
-   case TYPE_U16:
-   case TYPE_U32: return util_is_power_of_two(reg.data.u32);
-   default:
-      return false;
-   }
+   if (reg.type == TYPE_U64 || reg.type == TYPE_S64)
+      return util_is_power_of_two_or_zero64(reg.data.u64);
+   else
+      return util_is_power_of_two_or_zero(reg.data.u32);
 }
 
 void
@@ -442,6 +444,12 @@ ImmediateValue::applyLog2()
    case TYPE_U16:
    case TYPE_U32:
       reg.data.u32 = util_logbase2(reg.data.u32);
+      break;
+   case TYPE_S64:
+      assert(!this->isNegative());
+      // fall through
+   case TYPE_U64:
+      reg.data.u64 = util_logbase2_64(reg.data.u64);
       break;
    case TYPE_F32:
       reg.data.f32 = log2f(reg.data.f32);
@@ -572,6 +580,7 @@ void Instruction::init()
    encSize = 0;
    ipa = 0;
    mask = 0;
+   precise = 0;
 
    lanes = 0xf;
 
@@ -867,22 +876,22 @@ Instruction::writesPredicate() const
    return false;
 }
 
-static bool
-insnCheckCommutationDefSrc(const Instruction *a, const Instruction *b)
+bool
+Instruction::canCommuteDefSrc(const Instruction *i) const
 {
-   for (int d = 0; a->defExists(d); ++d)
-      for (int s = 0; b->srcExists(s); ++s)
-         if (a->getDef(d)->interfers(b->getSrc(s)))
+   for (int d = 0; defExists(d); ++d)
+      for (int s = 0; i->srcExists(s); ++s)
+         if (getDef(d)->interfers(i->getSrc(s)))
             return false;
    return true;
 }
 
-static bool
-insnCheckCommutationDefDef(const Instruction *a, const Instruction *b)
+bool
+Instruction::canCommuteDefDef(const Instruction *i) const
 {
-   for (int d = 0; a->defExists(d); ++d)
-      for (int c = 0; b->defExists(c); ++c)
-         if (a->getDef(d)->interfers(b->getDef(c)))
+   for (int d = 0; defExists(d); ++d)
+      for (int c = 0; i->defExists(c); ++c)
+         if (getDef(d)->interfers(i->getDef(c)))
             return false;
    return true;
 }
@@ -890,19 +899,19 @@ insnCheckCommutationDefDef(const Instruction *a, const Instruction *b)
 bool
 Instruction::isCommutationLegal(const Instruction *i) const
 {
-   bool ret = insnCheckCommutationDefDef(this, i);
-   ret = ret && insnCheckCommutationDefSrc(this, i);
-   ret = ret && insnCheckCommutationDefSrc(i, this);
-   return ret;
+   return canCommuteDefDef(i) &&
+      canCommuteDefSrc(i) &&
+      i->canCommuteDefSrc(this);
 }
 
 TexInstruction::TexInstruction(Function *fn, operation op)
-   : Instruction(fn, op, TYPE_F32)
+   : Instruction(fn, op, TYPE_F32), tex()
 {
-   memset(&tex, 0, sizeof(tex));
-
    tex.rIndirectSrc = -1;
    tex.sIndirectSrc = -1;
+
+   if (op == OP_TXF)
+      sType = TYPE_U32;
 }
 
 TexInstruction::~TexInstruction()
@@ -961,6 +970,119 @@ const struct TexInstruction::Target::Desc TexInstruction::Target::descTable[] =
    { "CUBE_ARRAY_SHADOW", 2, 4, true,  true,  true  },
    { "BUFFER",            1, 1, false, false, false },
 };
+
+const struct TexInstruction::ImgFormatDesc TexInstruction::formatTable[] =
+{
+   { "NONE",         0, {  0,  0,  0,  0 },  UINT },
+
+   { "RGBA32F",      4, { 32, 32, 32, 32 }, FLOAT },
+   { "RGBA16F",      4, { 16, 16, 16, 16 }, FLOAT },
+   { "RG32F",        2, { 32, 32,  0,  0 }, FLOAT },
+   { "RG16F",        2, { 16, 16,  0,  0 }, FLOAT },
+   { "R11G11B10F",   3, { 11, 11, 10,  0 }, FLOAT },
+   { "R32F",         1, { 32,  0,  0,  0 }, FLOAT },
+   { "R16F",         1, { 16,  0,  0,  0 }, FLOAT },
+
+   { "RGBA32UI",     4, { 32, 32, 32, 32 },  UINT },
+   { "RGBA16UI",     4, { 16, 16, 16, 16 },  UINT },
+   { "RGB10A2UI",    4, { 10, 10, 10,  2 },  UINT },
+   { "RGBA8UI",      4, {  8,  8,  8,  8 },  UINT },
+   { "RG32UI",       2, { 32, 32,  0,  0 },  UINT },
+   { "RG16UI",       2, { 16, 16,  0,  0 },  UINT },
+   { "RG8UI",        2, {  8,  8,  0,  0 },  UINT },
+   { "R32UI",        1, { 32,  0,  0,  0 },  UINT },
+   { "R16UI",        1, { 16,  0,  0,  0 },  UINT },
+   { "R8UI",         1, {  8,  0,  0,  0 },  UINT },
+
+   { "RGBA32I",      4, { 32, 32, 32, 32 },  SINT },
+   { "RGBA16I",      4, { 16, 16, 16, 16 },  SINT },
+   { "RGBA8I",       4, {  8,  8,  8,  8 },  SINT },
+   { "RG32I",        2, { 32, 32,  0,  0 },  SINT },
+   { "RG16I",        2, { 16, 16,  0,  0 },  SINT },
+   { "RG8I",         2, {  8,  8,  0,  0 },  SINT },
+   { "R32I",         1, { 32,  0,  0,  0 },  SINT },
+   { "R16I",         1, { 16,  0,  0,  0 },  SINT },
+   { "R8I",          1, {  8,  0,  0,  0 },  SINT },
+
+   { "RGBA16",       4, { 16, 16, 16, 16 }, UNORM },
+   { "RGB10A2",      4, { 10, 10, 10,  2 }, UNORM },
+   { "RGBA8",        4, {  8,  8,  8,  8 }, UNORM },
+   { "RG16",         2, { 16, 16,  0,  0 }, UNORM },
+   { "RG8",          2, {  8,  8,  0,  0 }, UNORM },
+   { "R16",          1, { 16,  0,  0,  0 }, UNORM },
+   { "R8",           1, {  8,  0,  0,  0 }, UNORM },
+
+   { "RGBA16_SNORM", 4, { 16, 16, 16, 16 }, SNORM },
+   { "RGBA8_SNORM",  4, {  8,  8,  8,  8 }, SNORM },
+   { "RG16_SNORM",   2, { 16, 16,  0,  0 }, SNORM },
+   { "RG8_SNORM",    2, {  8,  8,  0,  0 }, SNORM },
+   { "R16_SNORM",    1, { 16,  0,  0,  0 }, SNORM },
+   { "R8_SNORM",     1, {  8,  0,  0,  0 }, SNORM },
+
+   { "BGRA8",        4, {  8,  8,  8,  8 }, UNORM, true },
+};
+
+const struct TexInstruction::ImgFormatDesc *
+TexInstruction::translateImgFormat(enum pipe_format format)
+{
+
+#define FMT_CASE(a, b) \
+  case PIPE_FORMAT_ ## a: return &formatTable[nv50_ir::FMT_ ## b]
+
+   switch (format) {
+   FMT_CASE(NONE, NONE);
+
+   FMT_CASE(R32G32B32A32_FLOAT, RGBA32F);
+   FMT_CASE(R16G16B16A16_FLOAT, RGBA16F);
+   FMT_CASE(R32G32_FLOAT, RG32F);
+   FMT_CASE(R16G16_FLOAT, RG16F);
+   FMT_CASE(R11G11B10_FLOAT, R11G11B10F);
+   FMT_CASE(R32_FLOAT, R32F);
+   FMT_CASE(R16_FLOAT, R16F);
+
+   FMT_CASE(R32G32B32A32_UINT, RGBA32UI);
+   FMT_CASE(R16G16B16A16_UINT, RGBA16UI);
+   FMT_CASE(R10G10B10A2_UINT, RGB10A2UI);
+   FMT_CASE(R8G8B8A8_UINT, RGBA8UI);
+   FMT_CASE(R32G32_UINT, RG32UI);
+   FMT_CASE(R16G16_UINT, RG16UI);
+   FMT_CASE(R8G8_UINT, RG8UI);
+   FMT_CASE(R32_UINT, R32UI);
+   FMT_CASE(R16_UINT, R16UI);
+   FMT_CASE(R8_UINT, R8UI);
+
+   FMT_CASE(R32G32B32A32_SINT, RGBA32I);
+   FMT_CASE(R16G16B16A16_SINT, RGBA16I);
+   FMT_CASE(R8G8B8A8_SINT, RGBA8I);
+   FMT_CASE(R32G32_SINT, RG32I);
+   FMT_CASE(R16G16_SINT, RG16I);
+   FMT_CASE(R8G8_SINT, RG8I);
+   FMT_CASE(R32_SINT, R32I);
+   FMT_CASE(R16_SINT, R16I);
+   FMT_CASE(R8_SINT, R8I);
+
+   FMT_CASE(R16G16B16A16_UNORM, RGBA16);
+   FMT_CASE(R10G10B10A2_UNORM, RGB10A2);
+   FMT_CASE(R8G8B8A8_UNORM, RGBA8);
+   FMT_CASE(R16G16_UNORM, RG16);
+   FMT_CASE(R8G8_UNORM, RG8);
+   FMT_CASE(R16_UNORM, R16);
+   FMT_CASE(R8_UNORM, R8);
+
+   FMT_CASE(R16G16B16A16_SNORM, RGBA16_SNORM);
+   FMT_CASE(R8G8B8A8_SNORM, RGBA8_SNORM);
+   FMT_CASE(R16G16_SNORM, RG16_SNORM);
+   FMT_CASE(R8G8_SNORM, RG8_SNORM);
+   FMT_CASE(R16_SNORM, R16_SNORM);
+   FMT_CASE(R8_SNORM, R8_SNORM);
+
+   FMT_CASE(B8G8R8A8_UNORM, BGRA8);
+
+   default:
+      assert(!"Unexpected format");
+      return &formatTable[nv50_ir::FMT_NONE];
+   }
+}
 
 void
 TexInstruction::setIndirectR(Value *v)
@@ -1059,6 +1181,8 @@ Program::Program(Type type, Target *arch)
    binSize = 0;
 
    maxGPR = -1;
+   fp64 = false;
+   persampleInvocation = false;
 
    main = new Function(this, "MAIN", ~0);
    calls.insert(&main->call);
@@ -1118,25 +1242,25 @@ extern "C" {
 static void
 nv50_ir_init_prog_info(struct nv50_ir_prog_info *info)
 {
-#if defined(PIPE_SHADER_HULL) && defined(PIPE_SHADER_DOMAIN)
-   if (info->type == PIPE_SHADER_HULL || info->type == PIPE_SHADER_DOMAIN) {
+   if (info->type == PIPE_SHADER_TESS_CTRL || info->type == PIPE_SHADER_TESS_EVAL) {
       info->prop.tp.domain = PIPE_PRIM_MAX;
       info->prop.tp.outputPrim = PIPE_PRIM_MAX;
    }
-#endif
    if (info->type == PIPE_SHADER_GEOMETRY) {
       info->prop.gp.instanceCount = 1;
       info->prop.gp.maxVertices = 1;
    }
-   info->io.clipDistance = 0xff;
-   info->io.pointSize = 0xff;
+   if (info->type == PIPE_SHADER_COMPUTE) {
+      info->prop.cp.numThreads[0] =
+      info->prop.cp.numThreads[1] =
+      info->prop.cp.numThreads[2] = 1;
+   }
    info->io.instanceId = 0xff;
    info->io.vertexId = 0xff;
    info->io.edgeFlagIn = 0xff;
    info->io.edgeFlagOut = 0xff;
    info->io.fragDepth = 0xff;
    info->io.sampleMask = 0xff;
-   info->io.backFaceColor[0] = info->io.backFaceColor[1] = 0xff;
 }
 
 int
@@ -1153,14 +1277,14 @@ nv50_ir_generate_code(struct nv50_ir_prog_info *info)
 
    switch (info->type) {
    PROG_TYPE_CASE(VERTEX, VERTEX);
-// PROG_TYPE_CASE(HULL, TESSELLATION_CONTROL);
-// PROG_TYPE_CASE(DOMAIN, TESSELLATION_EVAL);
+   PROG_TYPE_CASE(TESS_CTRL, TESSELLATION_CONTROL);
+   PROG_TYPE_CASE(TESS_EVAL, TESSELLATION_EVAL);
    PROG_TYPE_CASE(GEOMETRY, GEOMETRY);
    PROG_TYPE_CASE(FRAGMENT, FRAGMENT);
    PROG_TYPE_CASE(COMPUTE, COMPUTE);
    default:
-      type = nv50_ir::Program::TYPE_COMPUTE;
-      break;
+      INFO_DBG(info->dbgFlags, VERBOSE, "unsupported program type %u\n", info->type);
+      return -1;
    }
    INFO_DBG(info->dbgFlags, VERBOSE, "translating program of type %u\n", type);
 
@@ -1169,24 +1293,23 @@ nv50_ir_generate_code(struct nv50_ir_prog_info *info)
       return -1;
 
    nv50_ir::Program *prog = new nv50_ir::Program(type, targ);
-   if (!prog)
+   if (!prog) {
+      nv50_ir::Target::destroy(targ);
       return -1;
+   }
    prog->driver = info;
    prog->dbgFlags = info->dbgFlags;
    prog->optLevel = info->optLevel;
 
    switch (info->bin.sourceRep) {
-#if 0
-   case PIPE_IR_LLVM:
-   case PIPE_IR_GLSL:
-      return -1;
-   case PIPE_IR_SM4:
-      ret = prog->makeFromSM4(info) ? 0 : -2;
+   case PIPE_SHADER_IR_NIR:
+      ret = prog->makeFromNIR(info) ? 0 : -2;
       break;
-   case PIPE_IR_TGSI:
-#endif
-   default:
+   case PIPE_SHADER_IR_TGSI:
       ret = prog->makeFromTGSI(info) ? 0 : -2;
+      break;
+   default:
+      ret = -1;
       break;
    }
    if (ret < 0)

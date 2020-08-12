@@ -29,7 +29,6 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-#include "main/glheader.h"
 #include "main/macros.h"
 #include "main/enums.h"
 #include "main/transformfeedback.h"
@@ -38,16 +37,17 @@
 
 #include "brw_defines.h"
 #include "brw_context.h"
-#include "brw_eu.h"
 #include "brw_util.h"
 #include "brw_state.h"
 #include "brw_ff_gs.h"
 
 #include "util/ralloc.h"
 
-static void compile_ff_gs_prog(struct brw_context *brw,
-                               struct brw_ff_gs_prog_key *key)
+void
+brw_codegen_ff_gs_prog(struct brw_context *brw,
+                       struct brw_ff_gs_prog_key *key)
 {
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct brw_ff_gs_compile c;
    const GLuint *program;
    void *mem_ctx;
@@ -56,14 +56,14 @@ static void compile_ff_gs_prog(struct brw_context *brw,
    memset(&c, 0, sizeof(c));
 
    c.key = *key;
-   c.vue_map = brw->vs.prog_data->base.vue_map;
+   c.vue_map = brw_vue_prog_data(brw->vs.base.prog_data)->vue_map;
    c.nr_regs = (c.vue_map.num_slots + 1)/2;
 
    mem_ctx = ralloc_context(NULL);
 
    /* Begin the compilation:
     */
-   brw_init_compile(brw, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.func.single_program_flow = 1;
 
@@ -72,7 +72,7 @@ static void compile_ff_gs_prog(struct brw_context *brw,
     */
    brw_set_default_mask_control(&c.func, BRW_MASK_DISABLE);
 
-   if (brw->gen >= 6) {
+   if (devinfo->gen >= 6) {
       unsigned num_verts;
       bool check_edge_flag;
       /* On Sandybridge, we use the GS for implementing transform feedback
@@ -127,7 +127,7 @@ static void compile_ff_gs_prog(struct brw_context *brw,
       }
    }
 
-   brw_compact_instructions(&c.func, 0, 0, NULL);
+   brw_compact_instructions(&c.func, 0, NULL);
 
    /* get the program
     */
@@ -135,7 +135,8 @@ static void compile_ff_gs_prog(struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
       fprintf(stderr, "gs:\n");
-      brw_disassemble(brw, c.func.store, 0, program_size, stderr);
+      brw_disassemble(&brw->screen->devinfo, c.func.store,
+                      0, program_size, stderr);
       fprintf(stderr, "\n");
     }
 
@@ -147,9 +148,21 @@ static void compile_ff_gs_prog(struct brw_context *brw,
    ralloc_free(mem_ctx);
 }
 
-static void populate_key(struct brw_context *brw,
-                         struct brw_ff_gs_prog_key *key)
+static bool
+brw_ff_gs_state_dirty(const struct brw_context *brw)
 {
+   return brw_state_dirty(brw,
+                          _NEW_LIGHT,
+                          BRW_NEW_PRIMITIVE |
+                          BRW_NEW_TRANSFORM_FEEDBACK |
+                          BRW_NEW_VS_PROG_DATA);
+}
+
+static void
+brw_ff_gs_populate_key(struct brw_context *brw,
+                       struct brw_ff_gs_prog_key *key)
+{
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    static const unsigned swizzle_for_offset[4] = {
       BRW_SWIZZLE4(0, 1, 2, 3),
       BRW_SWIZZLE4(1, 2, 3, 3),
@@ -159,10 +172,12 @@ static void populate_key(struct brw_context *brw,
 
    struct gl_context *ctx = &brw->ctx;
 
+   assert(devinfo->gen < 7);
+
    memset(key, 0, sizeof(*key));
 
    /* BRW_NEW_VS_PROG_DATA (part of VUE map) */
-   key->attrs = brw->vs.prog_data->base.vue_map.slots_valid;
+   key->attrs = brw_vue_prog_data(brw->vs.base.prog_data)->vue_map.slots_valid;
 
    /* BRW_NEW_PRIMITIVE */
    key->primitive = brw->primitive;
@@ -176,17 +191,14 @@ static void populate_key(struct brw_context *brw,
       key->pv_first = true;
    }
 
-   if (brw->gen >= 7) {
-      /* On Gen7 and later, we don't use GS (yet). */
-      key->need_gs_prog = false;
-   } else if (brw->gen == 6) {
+   if (devinfo->gen == 6) {
       /* On Gen6, GS is used for transform feedback. */
       /* BRW_NEW_TRANSFORM_FEEDBACK */
       if (_mesa_is_xfb_active_and_unpaused(ctx)) {
-         const struct gl_shader_program *shaderprog =
+         const struct gl_program *prog =
             ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX];
          const struct gl_transform_feedback_info *linked_xfb_info =
-            &shaderprog->LinkedTransformFeedback;
+            prog->sh.LinkedTransformFeedback;
          int i;
 
          /* Make sure that the VUE slots won't overflow the unsigned chars in
@@ -221,39 +233,28 @@ static void populate_key(struct brw_context *brw,
 
 /* Calculate interpolants for triangle and line rasterization.
  */
-static void
+void
 brw_upload_ff_gs_prog(struct brw_context *brw)
 {
    struct brw_ff_gs_prog_key key;
+
+   if (!brw_ff_gs_state_dirty(brw))
+      return;
+
    /* Populate the key:
     */
-   populate_key(brw, &key);
+   brw_ff_gs_populate_key(brw, &key);
 
    if (brw->ff_gs.prog_active != key.need_gs_prog) {
-      brw->state.dirty.brw |= BRW_NEW_FF_GS_PROG_DATA;
+      brw->ctx.NewDriverState |= BRW_NEW_FF_GS_PROG_DATA;
       brw->ff_gs.prog_active = key.need_gs_prog;
    }
 
    if (brw->ff_gs.prog_active) {
-      if (!brw_search_cache(&brw->cache, BRW_CACHE_FF_GS_PROG,
-			    &key, sizeof(key),
-			    &brw->ff_gs.prog_offset, &brw->ff_gs.prog_data)) {
-	 compile_ff_gs_prog( brw, &key );
+      if (!brw_search_cache(&brw->cache, BRW_CACHE_FF_GS_PROG, &key,
+                            sizeof(key), &brw->ff_gs.prog_offset,
+                            &brw->ff_gs.prog_data, true)) {
+         brw_codegen_ff_gs_prog(brw, &key);
       }
    }
 }
-
-void gen6_brw_upload_ff_gs_prog(struct brw_context *brw)
-{
-   brw_upload_ff_gs_prog(brw);
-}
-
-const struct brw_tracked_state brw_ff_gs_prog = {
-   .dirty = {
-      .mesa  = _NEW_LIGHT,
-      .brw   = BRW_NEW_PRIMITIVE |
-               BRW_NEW_TRANSFORM_FEEDBACK |
-               BRW_NEW_VS_PROG_DATA,
-   },
-   .emit = brw_upload_ff_gs_prog
-};

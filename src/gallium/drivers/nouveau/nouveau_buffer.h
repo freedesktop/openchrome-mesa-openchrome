@@ -3,7 +3,7 @@
 
 #include "util/u_range.h"
 #include "util/u_transfer.h"
-#include "util/u_double_list.h"
+#include "util/list.h"
 
 struct pipe_resource;
 struct nouveau_context;
@@ -14,10 +14,13 @@ struct nouveau_bo;
  *
  * USER_MEMORY: resource->data is a pointer to client memory and may change
  *  between GL calls
+ *
+ * USER_PTR: bo is backed by user memory mapped into the GPUs VM
  */
 #define NOUVEAU_BUFFER_STATUS_GPU_READING (1 << 0)
 #define NOUVEAU_BUFFER_STATUS_GPU_WRITING (1 << 1)
 #define NOUVEAU_BUFFER_STATUS_DIRTY       (1 << 2)
+#define NOUVEAU_BUFFER_STATUS_USER_PTR    (1 << 6)
 #define NOUVEAU_BUFFER_STATUS_USER_MEMORY (1 << 7)
 
 #define NOUVEAU_BUFFER_STATUS_REALLOC_MASK NOUVEAU_BUFFER_STATUS_USER_MEMORY
@@ -41,6 +44,8 @@ struct nv04_resource {
    uint8_t status;
    uint8_t domain;
 
+   uint16_t cb_bindings[6]; /* per-shader per-slot bindings */
+
    struct nouveau_fence *fence;
    struct nouveau_fence *fence_wr;
 
@@ -58,7 +63,7 @@ nouveau_copy_buffer(struct nouveau_context *,
                     struct nv04_resource *dst, unsigned dst_pos,
                     struct nv04_resource *src, unsigned src_pos, unsigned size);
 
-boolean
+bool
 nouveau_buffer_migrate(struct nouveau_context *,
                        struct nv04_resource *, unsigned domain);
 
@@ -66,20 +71,20 @@ void *
 nouveau_resource_map_offset(struct nouveau_context *, struct nv04_resource *,
                             uint32_t offset, uint32_t flags);
 
-static INLINE void
+static inline void
 nouveau_resource_unmap(struct nv04_resource *res)
 {
    /* no-op */
 }
 
-static INLINE struct nv04_resource *
+static inline struct nv04_resource *
 nv04_resource(struct pipe_resource *resource)
 {
    return (struct nv04_resource *)resource;
 }
 
 /* is resource mapped into the GPU's address space (i.e. VRAM or GART) ? */
-static INLINE boolean
+static inline bool
 nouveau_resource_mapped_by_gpu(struct pipe_resource *resource)
 {
    return nv04_resource(resource)->domain != 0;
@@ -90,12 +95,21 @@ nouveau_buffer_create(struct pipe_screen *pscreen,
                       const struct pipe_resource *templ);
 
 struct pipe_resource *
+nouveau_buffer_create_from_user(struct pipe_screen *pscreen,
+                                const struct pipe_resource *templ,
+                                void *user_ptr);
+
+struct pipe_resource *
 nouveau_user_buffer_create(struct pipe_screen *screen, void *ptr,
                            unsigned bytes, unsigned usage);
 
-boolean
+bool
 nouveau_user_buffer_upload(struct nouveau_context *, struct nv04_resource *,
                            unsigned base, unsigned size);
+
+void
+nouveau_buffer_invalidate(struct pipe_context *pipe,
+                          struct pipe_resource *resource);
 
 /* Copy data to a scratch buffer and return address & bo the data resides in.
  * Returns 0 on failure.

@@ -47,7 +47,6 @@ public:
          FORWARD,
          BACK,
          CROSS, // e.g. loop break
-         DUMMY
       };
 
       Edge(Node *dst, Node *src, Type kind);
@@ -147,7 +146,7 @@ public:
 
 public:
    Graph();
-   ~Graph(); // does *not* free the nodes (make it an option ?)
+   virtual ~Graph(); // does *not* free the nodes (make it an option ?)
 
    inline Node *getRoot() const { return root; }
 

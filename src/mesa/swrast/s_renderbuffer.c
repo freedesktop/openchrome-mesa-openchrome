@@ -31,12 +31,13 @@
 
 
 #include "main/glheader.h"
-#include "main/imports.h"
+
 #include "main/context.h"
 #include "main/fbobject.h"
 #include "main/formats.h"
 #include "main/mtypes.h"
 #include "main/renderbuffer.h"
+#include "util/u_memory.h"
 #include "swrast/s_context.h"
 #include "swrast/s_renderbuffer.h"
 
@@ -76,14 +77,13 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
    case GL_RGBA4:
    case GL_RGB5_A1:
    case GL_RGBA8:
-#if 1
    case GL_RGB10_A2:
    case GL_RGBA12:
+#if UTIL_ARCH_LITTLE_ENDIAN
+      rb->Format = MESA_FORMAT_R8G8B8A8_UNORM;
+#else
+      rb->Format = MESA_FORMAT_A8B8G8R8_UNORM;
 #endif
-      if (_mesa_little_endian())
-         rb->Format = MESA_FORMAT_R8G8B8A8_UNORM;
-      else
-         rb->Format = MESA_FORMAT_A8B8G8R8_UNORM;
       break;
    case GL_RGBA16:
    case GL_RGBA16_SNORM:
@@ -153,7 +153,7 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
    }
    else {
       /* the internalFormat should have been error checked long ago */
-      ASSERT(rb->_BaseFormat);
+      assert(rb->_BaseFormat);
    }
 
    return GL_TRUE;
@@ -180,7 +180,8 @@ _swrast_map_soft_renderbuffer(struct gl_context *ctx,
                               GLuint x, GLuint y, GLuint w, GLuint h,
                               GLbitfield mode,
                               GLubyte **out_map,
-                              GLint *out_stride)
+                              GLint *out_stride,
+                              bool flip_y)
 {
    struct swrast_renderbuffer *srb = swrast_renderbuffer(rb);
    GLubyte *map = srb->Buffer;
@@ -274,7 +275,7 @@ add_color_renderbuffers(struct gl_context *ctx, struct gl_framebuffer *fb,
       rb->InternalFormat = GL_RGBA;
 
       rb->AllocStorage = soft_renderbuffer_storage;
-      _mesa_add_renderbuffer(fb, b, rb);
+      _mesa_attach_and_own_rb(fb, b, rb);
    }
 
    return GL_TRUE;
@@ -320,7 +321,7 @@ add_depth_renderbuffer(struct gl_context *ctx, struct gl_framebuffer *fb,
    }
 
    rb->AllocStorage = soft_renderbuffer_storage;
-   _mesa_add_renderbuffer(fb, BUFFER_DEPTH, rb);
+   _mesa_attach_and_own_rb(fb, BUFFER_DEPTH, rb);
 
    return GL_TRUE;
 }
@@ -358,7 +359,7 @@ add_stencil_renderbuffer(struct gl_context *ctx, struct gl_framebuffer *fb,
    rb->InternalFormat = GL_STENCIL_INDEX8;
 
    rb->AllocStorage = soft_renderbuffer_storage;
-   _mesa_add_renderbuffer(fb, BUFFER_STENCIL, rb);
+   _mesa_attach_and_own_rb(fb, BUFFER_STENCIL, rb);
 
    return GL_TRUE;
 }
@@ -382,8 +383,8 @@ add_depth_stencil_renderbuffer(struct gl_context *ctx,
    rb->InternalFormat = GL_DEPTH_STENCIL;
 
    rb->AllocStorage = soft_renderbuffer_storage;
-   _mesa_add_renderbuffer(fb, BUFFER_DEPTH, rb);
-   _mesa_add_renderbuffer(fb, BUFFER_STENCIL, rb);
+   _mesa_attach_and_own_rb(fb, BUFFER_DEPTH, rb);
+   _mesa_attach_and_reference_rb(fb, BUFFER_STENCIL, rb);
 
    return GL_TRUE;
 }
@@ -420,7 +421,7 @@ add_accum_renderbuffer(struct gl_context *ctx, struct gl_framebuffer *fb,
 
    rb->InternalFormat = GL_RGBA16_SNORM;
    rb->AllocStorage = soft_renderbuffer_storage;
-   _mesa_add_renderbuffer(fb, BUFFER_ACCUM, rb);
+   _mesa_attach_and_own_rb(fb, BUFFER_ACCUM, rb);
 
    return GL_TRUE;
 }
@@ -465,7 +466,7 @@ add_aux_renderbuffers(struct gl_context *ctx, struct gl_framebuffer *fb,
       rb->InternalFormat = GL_RGBA;
 
       rb->AllocStorage = soft_renderbuffer_storage;
-      _mesa_add_renderbuffer(fb, BUFFER_AUX0 + i, rb);
+      _mesa_attach_and_own_rb(fb, BUFFER_AUX0 + i, rb);
    }
    return GL_TRUE;
 }
@@ -578,12 +579,13 @@ map_attachment(struct gl_context *ctx,
       ctx->Driver.MapRenderbuffer(ctx, rb,
                                   0, 0, rb->Width, rb->Height,
                                   GL_MAP_READ_BIT | GL_MAP_WRITE_BIT,
-                                  &srb->Map, &srb->RowStride);
+                                  &srb->Map, &srb->RowStride,
+                                  fb->FlipY);
    }
 
    assert(srb->Map);
 }
- 
+
 
 static void
 unmap_attachment(struct gl_context *ctx,
@@ -659,14 +661,14 @@ _swrast_map_renderbuffers(struct gl_context *ctx)
    }
 
    for (buf = 0; buf < fb->_NumColorDrawBuffers; buf++) {
-      if (fb->_ColorDrawBufferIndexes[buf] >= 0) {
+      if (fb->_ColorDrawBufferIndexes[buf] != BUFFER_NONE) {
          map_attachment(ctx, fb, fb->_ColorDrawBufferIndexes[buf]);
          find_renderbuffer_colortype(fb->_ColorDrawBuffers[buf]);
       }
    }
 }
- 
- 
+
+
 /**
  * Unmap renderbuffers after rendering.
  */
@@ -690,7 +692,7 @@ _swrast_unmap_renderbuffers(struct gl_context *ctx)
    }
 
    for (buf = 0; buf < fb->_NumColorDrawBuffers; buf++) {
-      if (fb->_ColorDrawBufferIndexes[buf] >= 0) {
+      if (fb->_ColorDrawBufferIndexes[buf] != BUFFER_NONE) {
          unmap_attachment(ctx, fb, fb->_ColorDrawBufferIndexes[buf]);
       }
    }

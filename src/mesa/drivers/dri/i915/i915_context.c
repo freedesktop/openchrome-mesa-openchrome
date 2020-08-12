@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2003 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,12 +22,13 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 #include "i915_context.h"
 #include "main/api_exec.h"
-#include "main/imports.h"
+#include "main/framebuffer.h"
+#include "main/extensions.h"
 #include "main/macros.h"
 #include "main/version.h"
 #include "main/vtxfmt.h"
@@ -52,14 +53,18 @@
 /* Override intel default.
  */
 static void
-i915InvalidateState(struct gl_context * ctx, GLuint new_state)
+i915InvalidateState(struct gl_context * ctx)
 {
+   GLuint new_state = ctx->NewState;
+
    _swrast_InvalidateState(ctx, new_state);
    _swsetup_InvalidateState(ctx, new_state);
-   _vbo_InvalidateState(ctx, new_state);
    _tnl_InvalidateState(ctx, new_state);
    _tnl_invalidate_vertex_state(ctx, new_state);
    intel_context(ctx)->NewGLState |= new_state;
+
+   if (new_state & (_NEW_SCISSOR | _NEW_BUFFERS | _NEW_VIEWPORT))
+      _mesa_update_draw_buffer_bounds(ctx, ctx->DrawBuffer);
 
    /* Todo: gather state values under which tracked parameters become
     * invalidated, add callbacks for things like
@@ -112,7 +117,7 @@ intel_init_texture_formats(struct gl_context *ctx)
    if (intel->gen == 3)
       ctx->TextureFormatSupported[MESA_FORMAT_A_UNORM8] = true;
    ctx->TextureFormatSupported[MESA_FORMAT_I_UNORM8] = true;
-   ctx->TextureFormatSupported[MESA_FORMAT_L8A8_UNORM] = true;
+   ctx->TextureFormatSupported[MESA_FORMAT_LA_UNORM8] = true;
 
    /* Depth and stencil */
    if (intel->gen == 3) {
@@ -208,7 +213,7 @@ i915CreateContext(int api,
    /* Advertise the full hardware capabilities.  The new memory
     * manager should cope much better with overload situations:
     */
-   ctx->Const.MaxTextureLevels = 12;
+   ctx->Const.MaxTextureSize = 2048;
    ctx->Const.Max3DTextureLevels = 9;
    ctx->Const.MaxCubeTextureLevels = 12;
    ctx->Const.MaxTextureRectSize = (1 << 11);
@@ -254,18 +259,19 @@ i915CreateContext(int api,
    /* FINISHME: Are there other options that should be enabled for software
     * FINISHME: vertex shaders?
     */
-   ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitCondCodes = true;
+   ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].EmitNoIndirectSampler =
+      true;
 
    struct gl_shader_compiler_options *const fs_options =
       & ctx->Const.ShaderCompilerOptions[MESA_SHADER_FRAGMENT];
    fs_options->MaxIfDepth = 0;
-   fs_options->EmitNoNoise = true;
    fs_options->EmitNoPow = true;
    fs_options->EmitNoMainReturn = true;
    fs_options->EmitNoIndirectInput = true;
    fs_options->EmitNoIndirectOutput = true;
    fs_options->EmitNoIndirectUniform = true;
    fs_options->EmitNoIndirectTemp = true;
+   fs_options->EmitNoIndirectSampler = true;
 
    ctx->Const.MaxDrawBuffers = 1;
    ctx->Const.QueryCounterBits.SamplesPassed = 0;
@@ -283,6 +289,7 @@ i915CreateContext(int api,
    _tnl_allow_vertex_fog(ctx, 0);
    _tnl_allow_pixel_fog(ctx, 1);
 
+   _mesa_override_extensions(ctx);
    _mesa_compute_version(ctx);
 
    _mesa_initialize_dispatch_tables(ctx);

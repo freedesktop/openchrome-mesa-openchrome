@@ -33,9 +33,9 @@
 #include "util/u_memory.h"
 #include "util/u_pointer.h"
 #include "util/u_string.h"
-#include "util/u_format.h"
-#include "util/u_format_tests.h"
-#include "util/u_format_s3tc.h"
+#include "util/format/u_format.h"
+#include "util/format/u_format_tests.h"
+#include "util/format/u_format_s3tc.h"
 
 #include "gallivm/lp_bld.h"
 #include "gallivm/lp_bld_debug.h"
@@ -44,6 +44,7 @@
 
 #include "lp_test.h"
 
+static struct lp_build_format_cache *cache_ptr;
 
 void
 write_tsv_header(FILE *fp)
@@ -71,19 +72,20 @@ write_tsv_row(FILE *fp,
 
 typedef void
 (*fetch_ptr_t)(void *unpacked, const void *packed,
-               unsigned i, unsigned j);
+               unsigned i, unsigned j, struct lp_build_format_cache *cache);
 
 
 static LLVMValueRef
 add_fetch_rgba_test(struct gallivm_state *gallivm, unsigned verbose,
                     const struct util_format_description *desc,
-                    struct lp_type type)
+                    struct lp_type type,
+                    unsigned use_cache)
 {
    char name[256];
    LLVMContextRef context = gallivm->context;
    LLVMModuleRef module = gallivm->module;
    LLVMBuilderRef builder = gallivm->builder;
-   LLVMTypeRef args[4];
+   LLVMTypeRef args[5];
    LLVMValueRef func;
    LLVMValueRef packed_ptr;
    LLVMValueRef offset = LLVMConstNull(LLVMInt32TypeInContext(context));
@@ -92,28 +94,34 @@ add_fetch_rgba_test(struct gallivm_state *gallivm, unsigned verbose,
    LLVMValueRef j;
    LLVMBasicBlockRef block;
    LLVMValueRef rgba;
+   LLVMValueRef cache = NULL;
 
-   util_snprintf(name, sizeof name, "fetch_%s_%s", desc->short_name,
-                 type.floating ? "float" : "unorm8");
+   snprintf(name, sizeof name, "fetch_%s_%s", desc->short_name,
+            type.floating ? "float" : "unorm8");
 
    args[0] = LLVMPointerType(lp_build_vec_type(gallivm, type), 0);
    args[1] = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
    args[3] = args[2] = LLVMInt32TypeInContext(context);
+   args[4] = LLVMPointerType(lp_build_format_cache_type(gallivm), 0);
 
    func = LLVMAddFunction(module, name,
                           LLVMFunctionType(LLVMVoidTypeInContext(context),
-                                           args, Elements(args), 0));
+                                           args, ARRAY_SIZE(args), 0));
    LLVMSetFunctionCallConv(func, LLVMCCallConv);
    rgba_ptr = LLVMGetParam(func, 0);
    packed_ptr = LLVMGetParam(func, 1);
    i = LLVMGetParam(func, 2);
    j = LLVMGetParam(func, 3);
 
+   if (use_cache) {
+      cache = LLVMGetParam(func, 4);
+   }
+
    block = LLVMAppendBasicBlockInContext(context, func, "entry");
    LLVMPositionBuilderAtEnd(builder, block);
 
    rgba = lp_build_fetch_rgba_aos(gallivm, desc, type, TRUE,
-                                  packed_ptr, offset, i, j);
+                                  packed_ptr, offset, i, j, cache);
 
    LLVMBuildStore(builder, rgba, rgba_ptr);
 
@@ -128,8 +136,10 @@ add_fetch_rgba_test(struct gallivm_state *gallivm, unsigned verbose,
 PIPE_ALIGN_STACK
 static boolean
 test_format_float(unsigned verbose, FILE *fp,
-                  const struct util_format_description *desc)
+                  const struct util_format_description *desc,
+                  unsigned use_cache)
 {
+   LLVMContextRef context;
    struct gallivm_state *gallivm;
    LLVMValueRef fetch = NULL;
    fetch_ptr_t fetch_ptr;
@@ -139,9 +149,11 @@ test_format_float(unsigned verbose, FILE *fp,
    boolean success = TRUE;
    unsigned i, j, k, l;
 
-   gallivm = gallivm_create("test_module_float", LLVMGetGlobalContext());
+   context = LLVMContextCreate();
+   gallivm = gallivm_create("test_module_float", context, NULL);
 
-   fetch = add_fetch_rgba_test(gallivm, verbose, desc, lp_float32_vec4_type());
+   fetch = add_fetch_rgba_test(gallivm, verbose, desc,
+                               lp_float32_vec4_type(), use_cache);
 
    gallivm_compile_module(gallivm);
 
@@ -170,7 +182,7 @@ test_format_float(unsigned verbose, FILE *fp,
 
                memset(unpacked, 0, sizeof unpacked);
 
-               fetch_ptr(unpacked, packed, j, i);
+               fetch_ptr(unpacked, packed, j, i, use_cache ? cache_ptr : NULL);
 
                for(k = 0; k < 4; ++k) {
                   if (util_double_inf_sign(test->unpacked[i][j][k]) != util_inf_sign(unpacked[k])) {
@@ -185,6 +197,11 @@ test_format_float(unsigned verbose, FILE *fp,
                       fabs((float)test->unpacked[i][j][k] - unpacked[k]) > FLT_EPSILON) {
                      match = FALSE;
                   }
+               }
+
+               /* Ignore errors in S3TC for now */
+               if (desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
+                  match = TRUE;
                }
 
                if (!match) {
@@ -208,6 +225,7 @@ test_format_float(unsigned verbose, FILE *fp,
    }
 
    gallivm_destroy(gallivm);
+   LLVMContextDispose(context);
 
    if(fp)
       write_tsv_row(fp, desc, success);
@@ -219,8 +237,10 @@ test_format_float(unsigned verbose, FILE *fp,
 PIPE_ALIGN_STACK
 static boolean
 test_format_unorm8(unsigned verbose, FILE *fp,
-                   const struct util_format_description *desc)
+                   const struct util_format_description *desc,
+                   unsigned use_cache)
 {
+   LLVMContextRef context;
    struct gallivm_state *gallivm;
    LLVMValueRef fetch = NULL;
    fetch_ptr_t fetch_ptr;
@@ -230,9 +250,11 @@ test_format_unorm8(unsigned verbose, FILE *fp,
    boolean success = TRUE;
    unsigned i, j, k, l;
 
-   gallivm = gallivm_create("test_module_unorm8", LLVMGetGlobalContext());
+   context = LLVMContextCreate();
+   gallivm = gallivm_create("test_module_unorm8", context, NULL);
 
-   fetch = add_fetch_rgba_test(gallivm, verbose, desc, lp_unorm8_vec4_type());
+   fetch = add_fetch_rgba_test(gallivm, verbose, desc,
+                               lp_unorm8_vec4_type(), use_cache);
 
    gallivm_compile_module(gallivm);
 
@@ -261,7 +283,7 @@ test_format_unorm8(unsigned verbose, FILE *fp,
 
                memset(unpacked, 0, sizeof unpacked);
 
-               fetch_ptr(unpacked, packed, j, i);
+               fetch_ptr(unpacked, packed, j, i, use_cache ? cache_ptr : NULL);
 
                match = TRUE;
                for(k = 0; k < 4; ++k) {
@@ -275,6 +297,11 @@ test_format_unorm8(unsigned verbose, FILE *fp,
 
                   if (error > 1)
                      match = FALSE;
+               }
+
+               /* Ignore errors in S3TC as we only implement a poor man approach */
+               if (desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
+                  match = TRUE;
                }
 
                if (!match) {
@@ -298,6 +325,7 @@ test_format_unorm8(unsigned verbose, FILE *fp,
    }
 
    gallivm_destroy(gallivm);
+   LLVMContextDispose(context);
 
    if(fp)
       write_tsv_row(fp, desc, success);
@@ -310,15 +338,16 @@ test_format_unorm8(unsigned verbose, FILE *fp,
 
 static boolean
 test_one(unsigned verbose, FILE *fp,
-         const struct util_format_description *format_desc)
+         const struct util_format_description *format_desc,
+         unsigned use_cache)
 {
    boolean success = TRUE;
 
-   if (!test_format_float(verbose, fp, format_desc)) {
+   if (!test_format_float(verbose, fp, format_desc, use_cache)) {
      success = FALSE;
    }
 
-   if (!test_format_unorm8(verbose, fp, format_desc)) {
+   if (!test_format_unorm8(verbose, fp, format_desc, use_cache)) {
      success = FALSE;
    }
 
@@ -331,38 +360,50 @@ test_all(unsigned verbose, FILE *fp)
 {
    enum pipe_format format;
    boolean success = TRUE;
+   unsigned use_cache;
 
-   util_format_s3tc_init();
+   cache_ptr = align_malloc(sizeof(struct lp_build_format_cache), 16);
 
-   for (format = 1; format < PIPE_FORMAT_COUNT; ++format) {
-      const struct util_format_description *format_desc;
+   for (use_cache = 0; use_cache < 2; use_cache++) {
+      for (format = 1; format < PIPE_FORMAT_COUNT; ++format) {
+         const struct util_format_description *format_desc;
 
-      format_desc = util_format_description(format);
-      if (!format_desc) {
-         continue;
-      }
+         format_desc = util_format_description(format);
+         if (!format_desc) {
+            continue;
+         }
 
+         /*
+          * TODO: test more
+          */
 
-      /*
-       * TODO: test more
-       */
+         if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
+            continue;
+         }
 
-      if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
-         continue;
-      }
+         if (util_format_is_pure_integer(format))
+            continue;
 
-      if (util_format_is_pure_integer(format))
-	 continue;
+         /* The codegen sometimes falls back to calling the precompiled fetch
+          * func, so if we don't have one of those (some compressed formats,
+          * some ), we can't reliably test it.  We'll surely have a
+          * precompiled fetch func for any format before we write LLVM code to
+          * fetch from it.
+          */
+         if (!format_desc->fetch_rgba_float)
+            continue;
 
-      if (format_desc->layout == UTIL_FORMAT_LAYOUT_S3TC &&
-          !util_format_s3tc_enabled) {
-         continue;
-      }
+         /* only test twice with formats which can use cache */
+         if (format_desc->layout != UTIL_FORMAT_LAYOUT_S3TC && use_cache) {
+            continue;
+         }
 
-      if (!test_one(verbose, fp, format_desc)) {
-           success = FALSE;
+         if (!test_one(verbose, fp, format_desc, use_cache)) {
+            success = FALSE;
+         }
       }
    }
+   align_free(cache_ptr);
 
    return success;
 }

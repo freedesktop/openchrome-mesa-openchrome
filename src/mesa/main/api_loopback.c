@@ -84,7 +84,6 @@
 
 #define ATTRIBI_4UI(index,x,y,z,w)   CALL_VertexAttribI4uiEXT(GET_DISPATCH(), (index,x,y,z,w))
 
-
 void GLAPIENTRY
 _mesa_Color3b( GLbyte red, GLbyte green, GLbyte blue )
 {
@@ -818,12 +817,6 @@ _mesa_EvalCoord2dv( const GLdouble *u )
 }
 
 void GLAPIENTRY
-_mesa_EvalCoord2fv( const GLfloat *u )
-{
-   EVALCOORD2( u[0], u[1] );
-}
-
-void GLAPIENTRY
 _mesa_EvalCoord2d( GLdouble u, GLdouble v )
 {
    EVALCOORD2( (GLfloat) u, (GLfloat) v );
@@ -831,12 +824,6 @@ _mesa_EvalCoord2d( GLdouble u, GLdouble v )
 
 void GLAPIENTRY
 _mesa_EvalCoord1dv( const GLdouble *u )
-{
-   EVALCOORD1( (GLfloat) *u );
-}
-
-void GLAPIENTRY
-_mesa_EvalCoord1fv( const GLfloat *u )
 {
    EVALCOORD1( (GLfloat) *u );
 }
@@ -858,8 +845,9 @@ _mesa_Materialf( GLenum face, GLenum pname, GLfloat param )
 void GLAPIENTRY
 _mesa_Materiali(GLenum face, GLenum pname, GLint param )
 {
-   GLfloat p = (GLfloat) param;
-   MATERIALFV(face, pname, &p);
+   GLfloat p[4];
+   p[0] = (GLfloat) param;
+   MATERIALFV(face, pname, p);
 }
 
 void GLAPIENTRY
@@ -1490,9 +1478,6 @@ _mesa_VertexAttribI4usv(GLuint index, const GLushort *v)
    ATTRIBI_4UI(index, v[0], v[1], v[2], v[3]);
 }
 
-
-
-
 /*
  * This code never registers handlers for any of the entry points
  * listed in vtxfmt.h.
@@ -1634,10 +1619,8 @@ _mesa_loopback_init_api_table(const struct gl_context *ctx,
       SET_MultiTexCoord4s(dest, _mesa_MultiTexCoord4s);
       SET_MultiTexCoord4sv(dest, _mesa_MultiTexCoord4sv);
       SET_EvalCoord2dv(dest, _mesa_EvalCoord2dv);
-      SET_EvalCoord2fv(dest, _mesa_EvalCoord2fv);
       SET_EvalCoord2d(dest, _mesa_EvalCoord2d);
       SET_EvalCoord1dv(dest, _mesa_EvalCoord1dv);
-      SET_EvalCoord1fv(dest, _mesa_EvalCoord1fv);
       SET_EvalCoord1d(dest, _mesa_EvalCoord1d);
       SET_Materiali(dest, _mesa_Materiali);
       SET_Materialiv(dest, _mesa_Materialiv);

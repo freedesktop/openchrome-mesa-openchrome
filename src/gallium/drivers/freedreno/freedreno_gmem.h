@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
  *
@@ -29,11 +27,13 @@
 #ifndef FREEDRENO_GMEM_H_
 #define FREEDRENO_GMEM_H_
 
-#include "pipe/p_context.h"
+#include "pipe/p_state.h"
+#include "util/list.h"
+
+#include "freedreno_util.h"
 
 /* per-pipe configuration for hw binning: */
 struct fd_vsc_pipe {
-	struct fd_bo *bo;
 	uint8_t x, y, w, h;      /* VSC_PIPE[p].CONFIG */
 };
 
@@ -46,20 +46,54 @@ struct fd_tile {
 };
 
 struct fd_gmem_stateobj {
-	struct pipe_scissor_state scissor;
-	uint cpp;
+	struct pipe_reference reference;
+	struct fd_screen *screen;
+	void *key;
+
+	uint32_t cbuf_base[MAX_RENDER_TARGETS];
+	uint32_t zsbuf_base[2];
+	uint8_t cbuf_cpp[MAX_RENDER_TARGETS];
+	uint8_t zsbuf_cpp[2];
 	uint16_t bin_h, nbins_y;
 	uint16_t bin_w, nbins_x;
 	uint16_t minx, miny;
 	uint16_t width, height;
-	bool has_zs;  /* gmem config using depth/stencil? */
+	uint16_t maxpw, maxph;   /* maximum pipe width/height */
+	uint8_t num_vsc_pipes;   /* number of pipes for a20x */
+
+	struct fd_vsc_pipe vsc_pipe[32];
+	struct fd_tile     tile[2048];
+
+	struct list_head node;
 };
 
-struct fd_context;
+void __fd_gmem_destroy(struct fd_gmem_stateobj *gmem);
 
-void fd_gmem_render_tiles(struct fd_context *ctx);
+static inline void
+fd_gmem_reference(struct fd_gmem_stateobj **ptr, struct fd_gmem_stateobj *gmem)
+{
+	struct fd_gmem_stateobj *old_gmem = *ptr;
 
-bool fd_gmem_needs_restore(struct fd_context *ctx, struct fd_tile *tile,
+	if (pipe_reference(&(*ptr)->reference, &gmem->reference))
+		__fd_gmem_destroy(old_gmem);
+
+	*ptr = gmem;
+}
+
+struct fd_gmem_cache {
+	struct hash_table *ht;
+	struct list_head lru;
+};
+
+struct fd_batch;
+
+void fd_gmem_render_tiles(struct fd_batch *batch);
+unsigned fd_gmem_estimate_bins_per_pipe(struct fd_batch *batch);
+bool fd_gmem_needs_restore(struct fd_batch *batch, const struct fd_tile *tile,
 		uint32_t buffers);
+
+struct pipe_screen;
+void fd_gmem_screen_init(struct pipe_screen *pscreen);
+void fd_gmem_screen_fini(struct pipe_screen *pscreen);
 
 #endif /* FREEDRENO_GMEM_H_ */

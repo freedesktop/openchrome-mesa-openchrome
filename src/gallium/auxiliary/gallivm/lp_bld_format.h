@@ -44,6 +44,45 @@ struct lp_type;
 struct lp_build_context;
 
 
+#define LP_BUILD_FORMAT_CACHE_DEBUG 0
+/*
+ * Block cache
+ *
+ * Optional block cache to be used when unpacking big pixel blocks.
+ * Must be a power of 2
+ */
+
+#define LP_BUILD_FORMAT_CACHE_SIZE 128
+
+/*
+ * Note: cache_data needs 16 byte alignment.
+ */
+struct lp_build_format_cache
+{
+   PIPE_ALIGN_VAR(16) uint32_t cache_data[LP_BUILD_FORMAT_CACHE_SIZE][4][4];
+   uint64_t cache_tags[LP_BUILD_FORMAT_CACHE_SIZE];
+#if LP_BUILD_FORMAT_CACHE_DEBUG
+   uint64_t cache_access_total;
+   uint64_t cache_access_miss;
+#endif
+};
+
+
+enum {
+   LP_BUILD_FORMAT_CACHE_MEMBER_DATA = 0,
+   LP_BUILD_FORMAT_CACHE_MEMBER_TAGS,
+#if LP_BUILD_FORMAT_CACHE_DEBUG
+   LP_BUILD_FORMAT_CACHE_MEMBER_ACCESS_TOTAL,
+   LP_BUILD_FORMAT_CACHE_MEMBER_ACCESS_MISS,
+#endif
+   LP_BUILD_FORMAT_CACHE_MEMBER_COUNT
+};
+
+
+LLVMTypeRef
+lp_build_format_cache_type(struct gallivm_state *gallivm);
+
+
 /*
  * AoS
  */
@@ -66,7 +105,8 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
                         LLVMValueRef base_ptr,
                         LLVMValueRef offset,
                         LLVMValueRef i,
-                        LLVMValueRef j);
+                        LLVMValueRef j,
+                        LLVMValueRef cache);
 
 LLVMValueRef
 lp_build_fetch_rgba_aos_array(struct gallivm_state *gallivm,
@@ -103,16 +143,27 @@ void
 lp_build_fetch_rgba_soa(struct gallivm_state *gallivm,
                         const struct util_format_description *format_desc,
                         struct lp_type type,
+                        boolean aligned,
                         LLVMValueRef base_ptr,
                         LLVMValueRef offsets,
                         LLVMValueRef i,
                         LLVMValueRef j,
+                        LLVMValueRef cache,
                         LLVMValueRef rgba_out[4]);
+
+void
+lp_build_store_rgba_soa(struct gallivm_state *gallivm,
+                        const struct util_format_description *format_desc,
+                        struct lp_type type,
+                        LLVMValueRef exec_mask,
+                        LLVMValueRef base_ptr,
+                        LLVMValueRef offset,
+                        LLVMValueRef out_of_bounds,
+                        const LLVMValueRef rgba_in[4]);
 
 /*
  * YUV
  */
-
 
 LLVMValueRef
 lp_build_fetch_subsampled_rgba_aos(struct gallivm_state *gallivm,
@@ -122,6 +173,35 @@ lp_build_fetch_subsampled_rgba_aos(struct gallivm_state *gallivm,
                                    LLVMValueRef offset,
                                    LLVMValueRef i,
                                    LLVMValueRef j);
+
+
+/*
+ * S3TC
+ */
+
+LLVMValueRef
+lp_build_fetch_s3tc_rgba_aos(struct gallivm_state *gallivm,
+                             const struct util_format_description *format_desc,
+                             unsigned n,
+                             LLVMValueRef base_ptr,
+                             LLVMValueRef offset,
+                             LLVMValueRef i,
+                             LLVMValueRef j,
+                             LLVMValueRef cache);
+
+/*
+ * RGTC
+ */
+
+LLVMValueRef
+lp_build_fetch_rgtc_rgba_aos(struct gallivm_state *gallivm,
+                             const struct util_format_description *format_desc,
+                             unsigned n,
+                             LLVMValueRef base_ptr,
+                             LLVMValueRef offset,
+                             LLVMValueRef i,
+                             LLVMValueRef j,
+                             LLVMValueRef cache);
 
 /*
  * special float formats
@@ -147,7 +227,7 @@ lp_build_smallfloat_to_float(struct gallivm_state *gallivm,
 
 LLVMValueRef
 lp_build_float_to_r11g11b10(struct gallivm_state *gallivm,
-                            LLVMValueRef *src);
+                            const LLVMValueRef *src);
 
 void
 lp_build_r11g11b10_to_float(struct gallivm_state *gallivm,

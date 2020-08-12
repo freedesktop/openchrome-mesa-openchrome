@@ -74,6 +74,8 @@ bool expr_handler::equal(value *l, value *r) {
 
 	assert(l != r);
 
+	if (l->is_lds_access() || r->is_lds_access())
+		return false;
 	if (l->gvalue() == r->gvalue())
 		return true;
 
@@ -324,13 +326,13 @@ void expr_handler::apply_alu_src_mod(const bc_alu &bc, unsigned src,
 	const bc_alu_src &s = bc.src[src];
 
 	if (s.abs)
-		v = fabs(v.f);
+		v = fabsf(v.f);
 	if (s.neg)
 		v = -v.f;
 }
 
 void expr_handler::apply_alu_dst_mod(const bc_alu &bc, literal &v) {
-	float omod_coeff[] = {2.0f, 4.0, 0.5f};
+	const float omod_coeff[] = {2.0f, 4.0, 0.5f};
 
 	if (bc.omod)
 		v = v.f * omod_coeff[bc.omod - 1];
@@ -383,8 +385,14 @@ bool expr_handler::fold_alu_op1(alu_node& n) {
 	if (n.src.empty())
 		return false;
 
+	/* don't fold LDS instructions */
+	if (n.bc.op_ptr->flags & AF_LDS)
+		return false;
+
 	value* v0 = n.src[0]->gvalue();
 
+	if (v0->is_lds_oq() || v0->is_lds_access())
+		return false;
 	assert(v0 && n.dst[0]);
 
 	if (!v0->is_const()) {
@@ -403,7 +411,9 @@ bool expr_handler::fold_alu_op1(alu_node& n) {
 		if ((n.bc.op == ALU_OP1_MOV || n.bc.op == ALU_OP1_MOVA_INT ||
 				n.bc.op == ALU_OP1_MOVA_GPR_INT)
 				&& n.bc.clamp == 0 && n.bc.omod == 0
-				&& n.bc.src[0].abs == 0 && n.bc.src[0].neg == 0) {
+				&& n.bc.src[0].abs == 0 && n.bc.src[0].neg == 0 &&
+				n.src.size() == 1 /* RIM/SIM can be appended as additional values */
+				&& n.dst[0]->no_reladdr_conflict_with(v0)) {
 			assign_source(n.dst[0], v0);
 			return true;
 		}
@@ -414,21 +424,21 @@ bool expr_handler::fold_alu_op1(alu_node& n) {
 	apply_alu_src_mod(n.bc, 0, cv);
 
 	switch (n.bc.op) {
-	case ALU_OP1_CEIL: dv = ceil(cv.f); break;
+	case ALU_OP1_CEIL: dv = ceilf(cv.f); break;
 	case ALU_OP1_COS: dv = cos(cv.f * 2.0f * M_PI); break;
-	case ALU_OP1_EXP_IEEE: dv = exp2(cv.f); break;
-	case ALU_OP1_FLOOR: dv = floor(cv.f); break;
+	case ALU_OP1_EXP_IEEE: dv = exp2f(cv.f); break;
+	case ALU_OP1_FLOOR: dv = floorf(cv.f); break;
 	case ALU_OP1_FLT_TO_INT: dv = (int)cv.f; break; // FIXME: round modes ????
-	case ALU_OP1_FLT_TO_INT_FLOOR: dv = (int32_t)floor(cv.f); break;
-	case ALU_OP1_FLT_TO_INT_RPI: dv = (int32_t)floor(cv.f + 0.5f); break;
-	case ALU_OP1_FLT_TO_INT_TRUNC: dv = (int32_t)trunc(cv.f); break;
+	case ALU_OP1_FLT_TO_INT_FLOOR: dv = (int32_t)floorf(cv.f); break;
+	case ALU_OP1_FLT_TO_INT_RPI: dv = (int32_t)floorf(cv.f + 0.5f); break;
+	case ALU_OP1_FLT_TO_INT_TRUNC: dv = (int32_t)truncf(cv.f); break;
 	case ALU_OP1_FLT_TO_UINT: dv = (uint32_t)cv.f; break;
-	case ALU_OP1_FRACT: dv = cv.f - floor(cv.f); break;
+	case ALU_OP1_FRACT: dv = cv.f - floorf(cv.f); break;
 	case ALU_OP1_INT_TO_FLT: dv = (float)cv.i; break;
 	case ALU_OP1_LOG_CLAMPED:
 	case ALU_OP1_LOG_IEEE:
 		if (cv.f != 0.0f)
-			dv = log2(cv.f);
+			dv = log2f(cv.f);
 		else
 			// don't fold to NAN, let the GPU handle it for now
 			// (prevents degenerate LIT tests from failing)
@@ -444,7 +454,7 @@ bool expr_handler::fold_alu_op1(alu_node& n) {
 	case ALU_OP1_PRED_SET_RESTORE: dv = cv; break;
 	case ALU_OP1_RECIPSQRT_CLAMPED:
 	case ALU_OP1_RECIPSQRT_FF:
-	case ALU_OP1_RECIPSQRT_IEEE: dv = 1.0f / sqrt(cv.f); break;
+	case ALU_OP1_RECIPSQRT_IEEE: dv = 1.0f / sqrtf(cv.f); break;
 	case ALU_OP1_RECIP_CLAMPED:
 	case ALU_OP1_RECIP_FF:
 	case ALU_OP1_RECIP_IEEE: dv = 1.0f / cv.f; break;
@@ -452,8 +462,8 @@ bool expr_handler::fold_alu_op1(alu_node& n) {
 	case ALU_OP1_RECIP_UINT: dv.u = (1ull << 32) / cv.u; break;
 //	case ALU_OP1_RNDNE: dv = floor(cv.f + 0.5f); break;
 	case ALU_OP1_SIN: dv = sin(cv.f * 2.0f * M_PI); break;
-	case ALU_OP1_SQRT_IEEE: dv = sqrt(cv.f); break;
-	case ALU_OP1_TRUNC: dv = trunc(cv.f); break;
+	case ALU_OP1_SQRT_IEEE: dv = sqrtf(cv.f); break;
+	case ALU_OP1_TRUNC: dv = truncf(cv.f); break;
 
 	default:
 		return false;
@@ -597,9 +607,13 @@ bool expr_handler::fold_assoc(alu_node *n) {
 
 	unsigned op = n->bc.op;
 	bool allow_neg = false, cur_neg = false;
+	bool distribute_neg = false;
 
 	switch(op) {
 	case ALU_OP2_ADD:
+		distribute_neg = true;
+		allow_neg = true;
+		break;
 	case ALU_OP2_MUL:
 	case ALU_OP2_MUL_IEEE:
 		allow_neg = true;
@@ -631,7 +645,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 		if (v1->is_const()) {
 			literal arg = v1->get_const_value();
 			apply_alu_src_mod(a->bc, 1, arg);
-			if (cur_neg)
+			if (cur_neg && distribute_neg)
 				arg.f = -arg.f;
 
 			if (a == n)
@@ -645,6 +659,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 						(op == ALU_OP2_MUL_IEEE &&
 								d0->is_alu_op(ALU_OP2_MUL))) &&
 						!d0->bc.omod && !d0->bc.clamp &&
+						!a->bc.src[0].abs &&
 						(!a->bc.src[0].neg || allow_neg)) {
 					cur_neg ^= a->bc.src[0].neg;
 					a = d0;
@@ -658,7 +673,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 		if (v0->is_const()) {
 			literal arg = v0->get_const_value();
 			apply_alu_src_mod(a->bc, 0, arg);
-			if (cur_neg)
+			if (cur_neg && distribute_neg)
 				arg.f = -arg.f;
 
 			if (last_arg == 0) {
@@ -678,6 +693,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 						(op == ALU_OP2_MUL_IEEE &&
 								d1->is_alu_op(ALU_OP2_MUL))) &&
 						!d1->bc.omod && !d1->bc.clamp &&
+						!a->bc.src[1].abs &&
 						(!a->bc.src[1].neg || allow_neg)) {
 					cur_neg ^= a->bc.src[1].neg;
 					a = d1;
@@ -703,7 +719,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 			n->src[0] = n->src[2];
 			n->bc.src[0] = n->bc.src[2];
 			n->src[1] = sh.get_const_value(cr);
-			memset(&n->bc.src[1], 0, sizeof(bc_alu_src));
+			n->bc.src[1].clear();
 
 			n->src.resize(2);
 			n->bc.set_op(ALU_OP2_ADD);
@@ -713,7 +729,7 @@ bool expr_handler::fold_assoc(alu_node *n) {
 		n->bc.src[0] = a->bc.src[last_arg];
 		n->bc.src[0].neg ^= cur_neg;
 		n->src[1] = sh.get_const_value(cr);
-		memset(&n->bc.src[1], 0, sizeof(bc_alu_src));
+		n->bc.src[1].clear();
 	}
 
 	return false;
@@ -746,13 +762,15 @@ bool expr_handler::fold_alu_op2(alu_node& n) {
 				n.bc.src[0].abs == n.bc.src[1].abs) {
 			switch (n.bc.op) {
 			case ALU_OP2_MIN: // (MIN x, x) => (MOV x)
+			case ALU_OP2_MIN_DX10:
 			case ALU_OP2_MAX:
+			case ALU_OP2_MAX_DX10:
 				convert_to_mov(n, v0, n.bc.src[0].neg, n.bc.src[0].abs);
 				return fold_alu_op1(n);
 			case ALU_OP2_ADD:  // (ADD x, x) => (MUL x, 2)
 				if (!sh.safe_math) {
 					n.src[1] = sh.get_const_value(2.0f);
-					memset(&n.bc.src[1], 0, sizeof(bc_alu_src));
+					n.bc.src[1].clear();
 					n.bc.set_op(ALU_OP2_MUL);
 					return fold_alu_op2(n);
 				}
@@ -927,12 +945,17 @@ bool expr_handler::fold_alu_op3(alu_node& n) {
 	if (!sh.safe_math && (n.bc.op_ptr->flags & AF_M_ASSOC)) {
 		if (fold_assoc(&n))
 			return true;
+		if (n.src.size() < 3)
+			return fold_alu_op2(n);
 	}
 
 	value* v0 = n.src[0]->gvalue();
 	value* v1 = n.src[1]->gvalue();
 	value* v2 = n.src[2]->gvalue();
 
+	/* LDS instructions look like op3 with no dst - don't fold. */
+	if (!n.dst[0])
+		return false;
 	assert(v0 && v1 && v2 && n.dst[0]);
 
 	bool isc0 = v0->is_const();
@@ -1007,9 +1030,17 @@ bool expr_handler::fold_alu_op3(alu_node& n) {
 				es1 = 1;
 			}
 
-			if (es0 != -1) {
-				value *va0 = es0 == 0 ? v1 : v0;
-				value *va1 = es1 == 0 ? mv1 : mv0;
+			value *va0 = es0 == 0 ? v1 : v0;
+			value *va1 = es1 == 0 ? mv1 : mv0;
+
+			/* Don't fold if no equal multipliers were found.
+			 * Also don#t fold if the operands of the to be created ADD are both
+			 * relatively accessed with different AR values because that would
+			 * create impossible code.
+			 */
+			if (es0 != -1 &&
+			    (!va0->is_rel() || !va1->is_rel() ||
+			     (va0->rel == va1->rel))) {
 
 				alu_node *add = sh.create_alu();
 				add->bc.set_op(ALU_OP2_ADD);
@@ -1039,7 +1070,7 @@ bool expr_handler::fold_alu_op3(alu_node& n) {
 				}
 
 				n.src[1] = t;
-				memset(&n.bc.src[1], 0, sizeof(bc_alu_src));
+				n.bc.src[1].clear();
 
 				n.src.resize(2);
 
@@ -1070,7 +1101,7 @@ bool expr_handler::fold_alu_op3(alu_node& n) {
 				dv = cv0.f * cv1.f;
 				n.bc.set_op(ALU_OP2_ADD);
 				n.src[0] = sh.get_const_value(dv);
-				memset(&n.bc.src[0], 0, sizeof(bc_alu_src));
+				n.bc.src[0].clear();
 				n.src[1] = n.src[2];
 				n.bc.src[1] = n.bc.src[2];
 				n.src.resize(2);

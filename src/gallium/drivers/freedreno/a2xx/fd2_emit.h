@@ -1,5 +1,3 @@
-/* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
-
 /*
  * Copyright (C) 2012-2013 Rob Clark <robclark@freedesktop.org>
  *
@@ -42,7 +40,17 @@ struct fd2_vertex_buf {
 
 void fd2_emit_vertex_bufs(struct fd_ringbuffer *ring, uint32_t val,
 		struct fd2_vertex_buf *vbufs, uint32_t n);
-void fd2_emit_state(struct fd_context *ctx, uint32_t dirty);
-void fd2_emit_setup(struct fd_context *ctx);
+void fd2_emit_state_binning(struct fd_context *ctx, const enum fd_dirty_3d_state dirty);
+void fd2_emit_state(struct fd_context *ctx, const enum fd_dirty_3d_state dirty);
+void fd2_emit_restore(struct fd_context *ctx, struct fd_ringbuffer *ring);
+
+void fd2_emit_init_screen(struct pipe_screen *pscreen);
+void fd2_emit_init(struct pipe_context *pctx);
+
+static inline void
+fd2_emit_ib(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
+{
+	__OUT_IB(ring, false, target);
+}
 
 #endif /* FD2_EMIT_H */

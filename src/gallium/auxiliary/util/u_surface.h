@@ -45,12 +45,6 @@ u_surface_default_template(struct pipe_surface *view,
                            const struct pipe_resource *texture);
 
 extern void
-util_copy_rect(ubyte * dst, enum pipe_format format,
-               unsigned dst_stride, unsigned dst_x, unsigned dst_y,
-               unsigned width, unsigned height, const ubyte * src,
-               int src_stride, unsigned src_x, unsigned src_y);
-
-extern void
 util_copy_box(ubyte * dst,
               enum pipe_format format,
               unsigned dst_stride, unsigned dst_slice_stride,
@@ -72,6 +66,12 @@ util_fill_box(ubyte * dst, enum pipe_format format,
               unsigned width, unsigned height, unsigned depth,
               union util_color *uc);
 
+extern void
+util_fill_zs_box(ubyte *dst, enum pipe_format format,
+                 bool need_rmw, unsigned clear_flags, unsigned stride,
+                 unsigned layer_stride, unsigned width,
+                 unsigned height, unsigned depth,
+                 uint64_t zstencil);
 
 extern void
 util_resource_copy_region(struct pipe_context *pipe,
@@ -81,6 +81,13 @@ util_resource_copy_region(struct pipe_context *pipe,
                           struct pipe_resource *src,
                           unsigned src_level,
                           const struct pipe_box *src_box);
+
+extern void
+util_clear_texture(struct pipe_context *pipe,
+                   struct pipe_resource *tex,
+                   unsigned level,
+                   const struct pipe_box *box,
+                   const void *data);
 
 extern void
 util_clear_render_target(struct pipe_context *pipe,
@@ -97,6 +104,10 @@ util_clear_depth_stencil(struct pipe_context *pipe,
                          unsigned stencil,
                          unsigned dstx, unsigned dsty,
                          unsigned width, unsigned height);
+
+boolean
+util_can_blit_via_copy_region(const struct pipe_blit_info *blit,
+                              boolean tight_format_check);
 
 extern boolean
 util_try_blit_via_copy_region(struct pipe_context *ctx,

@@ -26,6 +26,7 @@
 
 #include <stdbool.h>
 #include "main/state.h"
+#include "util/u_memory.h"
 #include "nouveau_driver.h"
 #include "nouveau_context.h"
 #include "nouveau_fbo.h"
@@ -448,15 +449,14 @@ nv10_context_create(struct nouveau_screen *screen, gl_api api,
 	ctx->Extensions.ARB_texture_env_crossbar = true;
 	ctx->Extensions.ARB_texture_env_combine = true;
 	ctx->Extensions.ARB_texture_env_dot3 = true;
+	ctx->Extensions.EXT_texture_env_dot3 = true;
 	ctx->Extensions.NV_fog_distance = true;
 	ctx->Extensions.NV_texture_rectangle = true;
-	if (ctx->Mesa_DXTn) {
-		ctx->Extensions.EXT_texture_compression_s3tc = true;
-		ctx->Extensions.ANGLE_texture_compression_dxt = true;
-	}
+	ctx->Extensions.EXT_texture_compression_s3tc = true;
+	ctx->Extensions.ANGLE_texture_compression_dxt = true;
 
 	/* GL constants. */
-	ctx->Const.MaxTextureLevels = 12;
+	ctx->Const.MaxTextureSize = 2048;
 	ctx->Const.MaxTextureCoordUnits = NV10_TEXTURE_UNITS;
 	ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits = NV10_TEXTURE_UNITS;
 	ctx->Const.MaxTextureUnits = NV10_TEXTURE_UNITS;

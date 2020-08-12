@@ -28,9 +28,7 @@
 #include "main/glheader.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
-#include "main/simple_list.h"
 #include "main/enums.h"
-#include "main/mm.h"
 
 #include "intel_screen.h"
 #include "intel_tex.h"
@@ -93,7 +91,7 @@ emit_factor(GLuint blendUnit, GLuint * state, GLuint count,
 }
 
 
-static INLINE GLuint
+static inline GLuint
 GetTexelOp(GLint unit)
 {
    switch (unit) {
@@ -159,7 +157,7 @@ i830SetTexEnvCombine(struct i830_context * i830,
    };
 
    if (INTEL_DEBUG & DEBUG_TEXTURE)
-      fprintf(stderr, "%s\n", __FUNCTION__);
+      fprintf(stderr, "%s\n", __func__);
 
 
    /* The EXT version of the DOT3 extension does not support the
@@ -390,12 +388,13 @@ static void
 emit_texblend(struct i830_context *i830, GLuint unit, GLuint blendUnit,
               bool last_stage)
 {
-   struct gl_texture_unit *texUnit = &i830->intel.ctx.Texture.Unit[unit];
+   struct gl_fixedfunc_texture_unit *texUnit =
+      &i830->intel.ctx.Texture.FixedFuncUnit[unit];
    GLuint tmp[I830_TEXBLEND_SIZE], tmp_sz;
 
 
    if (0)
-      fprintf(stderr, "%s unit %d\n", __FUNCTION__, unit);
+      fprintf(stderr, "%s unit %d\n", __func__, unit);
 
    /* Update i830->state.TexBlend
     */

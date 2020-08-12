@@ -24,10 +24,8 @@
 #include <signal.h>
 #include <setjmp.h>
 
-extern "C" {
 #include "glxclient.h"
 #include "glx_error.h"
-}
 
 extern bool GetGLXScreenConfigs_called;
 extern struct glx_screen *psc;
@@ -173,7 +171,6 @@ TEST_F(query_renderer_string_test, invalid_attribute)
       E(GLX_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_MESA),
       E(GLX_RENDERER_OPENGL_ES_PROFILE_VERSION_MESA),
       E(GLX_RENDERER_OPENGL_ES2_PROFILE_VERSION_MESA),
-      E(GLX_RENDERER_ID_MESA),
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(invalid_attributes); i++) {
@@ -324,7 +321,6 @@ TEST_F(query_renderer_integer_test, invalid_attribute)
       E(GLX_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_MESA + 0x10000),
       E(GLX_RENDERER_OPENGL_ES_PROFILE_VERSION_MESA + 0x10000),
       E(GLX_RENDERER_OPENGL_ES2_PROFILE_VERSION_MESA + 0x10000),
-      E(GLX_RENDERER_ID_MESA + 0x10000),
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(invalid_attributes); i++) {

@@ -28,43 +28,79 @@
 #include <dlfcn.h>
 #include "dri_common.h"
 #include "drisw_priv.h"
+#include <X11/extensions/shmproto.h>
+#include <assert.h>
+
+static int xshm_error = 0;
+static int xshm_opcode = -1;
+
+/**
+ * Catches potential Xlib errors.
+ */
+static int
+handle_xerror(Display *dpy, XErrorEvent *event)
+{
+   (void) dpy;
+
+   assert(xshm_opcode != -1);
+   if (event->request_code != xshm_opcode)
+      return 0;
+
+   xshm_error = event->error_code;
+   return 0;
+}
 
 static Bool
-XCreateDrawable(struct drisw_drawable * pdp,
-                Display * dpy, XID drawable, int visualid)
+XCreateDrawable(struct drisw_drawable * pdp, int shmid, Display * dpy)
 {
-   XGCValues gcvalues;
-   long visMask;
-   XVisualInfo visTemp;
-   int num_visuals;
+   if (pdp->ximage) {
+      XDestroyImage(pdp->ximage);
+      pdp->ximage = NULL;
+      if ((pdp->shminfo.shmid > 0) && (shmid != pdp->shminfo.shmid))
+         XShmDetach(dpy, &pdp->shminfo);
+   }
 
-   /* create GC's */
-   pdp->gc = XCreateGC(dpy, drawable, 0, NULL);
-   pdp->swapgc = XCreateGC(dpy, drawable, 0, NULL);
+   if (!xshm_error && shmid >= 0) {
+      pdp->shminfo.shmid = shmid;
+      pdp->ximage = XShmCreateImage(dpy,
+                                    NULL,
+                                    pdp->xDepth,
+                                    ZPixmap,              /* format */
+                                    NULL,                 /* data */
+                                    &pdp->shminfo,        /* shminfo */
+                                    0, 0);                /* width, height */
+      if (pdp->ximage != NULL) {
+         int (*old_handler)(Display *, XErrorEvent *);
 
-   gcvalues.function = GXcopy;
-   gcvalues.graphics_exposures = False;
-   XChangeGC(dpy, pdp->gc, GCFunction, &gcvalues);
-   XChangeGC(dpy, pdp->swapgc, GCFunction, &gcvalues);
-   XChangeGC(dpy, pdp->swapgc, GCGraphicsExposures, &gcvalues);
+         /* dispatch pending errors */
+         XSync(dpy, False);
 
-   /* visual */
-   visTemp.visualid = visualid;
-   visMask = VisualIDMask;
-   pdp->visinfo = XGetVisualInfo(dpy, visMask, &visTemp, &num_visuals);
+         old_handler = XSetErrorHandler(handle_xerror);
+         /* This may trigger the X protocol error we're ready to catch: */
+         XShmAttach(dpy, &pdp->shminfo);
+         XSync(dpy, False);
 
-   if (!pdp->visinfo || num_visuals == 0)
-      return False;
+         if (xshm_error) {
+         /* we are on a remote display, this error is normal, don't print it */
+            XDestroyImage(pdp->ximage);
+            pdp->ximage = NULL;
+         }
 
-   /* create XImage */
-   pdp->ximage = XCreateImage(dpy,
-                              pdp->visinfo->visual,
-                              pdp->visinfo->depth,
-                              ZPixmap, 0,             /* format, offset */
-                              NULL,                   /* data */
-                              0, 0,                   /* width, height */
-                              32,                     /* bitmap_pad */
-                              0);                     /* bytes_per_line */
+         (void) XSetErrorHandler(old_handler);
+      }
+   }
+
+   if (pdp->ximage == NULL) {
+      pdp->shminfo.shmid = -1;
+      pdp->ximage = XCreateImage(dpy,
+                                 NULL,
+                                 pdp->xDepth,
+                                 ZPixmap, 0,             /* format, offset */
+                                 NULL,                   /* data */
+                                 0, 0,                   /* width, height */
+                                 32,                     /* bitmap_pad */
+                                 0);                     /* bytes_per_line */
+   }
 
   /**
    * swrast does not handle 24-bit depth with 24 bpp, so let X do the
@@ -79,11 +115,13 @@ XCreateDrawable(struct drisw_drawable * pdp,
 static void
 XDestroyDrawable(struct drisw_drawable * pdp, Display * dpy, XID drawable)
 {
-   XDestroyImage(pdp->ximage);
-   free(pdp->visinfo);
+   if (pdp->ximage)
+      XDestroyImage(pdp->ximage);
+
+   if (pdp->shminfo.shmid > 0)
+      XShmDetach(dpy, &pdp->shminfo);
 
    XFreeGC(dpy, pdp->gc);
-   XFreeGC(dpy, pdp->swapgc);
 }
 
 /**
@@ -133,39 +171,74 @@ bytes_per_line(unsigned pitch_bits, unsigned mul)
 }
 
 static void
-swrastPutImage2(__DRIdrawable * draw, int op,
-                int x, int y, int w, int h, int stride,
-                char *data, void *loaderPrivate)
+swrastXPutImage(__DRIdrawable * draw, int op,
+                int srcx, int srcy, int x, int y,
+                int w, int h, int stride,
+                int shmid, char *data, void *loaderPrivate)
 {
    struct drisw_drawable *pdp = loaderPrivate;
    __GLXDRIdrawable *pdraw = &(pdp->base);
    Display *dpy = pdraw->psc->dpy;
    Drawable drawable;
    XImage *ximage;
-   GC gc;
+   GC gc = pdp->gc;
 
-   switch (op) {
-   case __DRI_SWRAST_IMAGE_OP_DRAW:
-      gc = pdp->gc;
-      break;
-   case __DRI_SWRAST_IMAGE_OP_SWAP:
-      gc = pdp->swapgc;
-      break;
-   default:
-      return;
+   if (!pdp->ximage || shmid != pdp->shminfo.shmid) {
+      if (!XCreateDrawable(pdp, shmid, dpy))
+         return;
    }
 
    drawable = pdraw->xDrawable;
-
    ximage = pdp->ximage;
-   ximage->data = data;
-   ximage->width = w;
-   ximage->height = h;
    ximage->bytes_per_line = stride ? stride : bytes_per_line(w * ximage->bits_per_pixel, 32);
+   ximage->data = data;
 
-   XPutImage(dpy, drawable, gc, ximage, 0, 0, x, y, w, h);
+   ximage->width = ximage->bytes_per_line / ((ximage->bits_per_pixel + 7)/ 8);
+   ximage->height = h;
 
+   if (pdp->shminfo.shmid >= 0) {
+      XShmPutImage(dpy, drawable, gc, ximage, srcx, srcy, x, y, w, h, False);
+      XSync(dpy, False);
+   } else {
+      XPutImage(dpy, drawable, gc, ximage, srcx, srcy, x, y, w, h);
+   }
    ximage->data = NULL;
+}
+
+static void
+swrastPutImageShm(__DRIdrawable * draw, int op,
+                  int x, int y, int w, int h, int stride,
+                  int shmid, char *shmaddr, unsigned offset,
+                  void *loaderPrivate)
+{
+   struct drisw_drawable *pdp = loaderPrivate;
+
+   pdp->shminfo.shmaddr = shmaddr;
+   swrastXPutImage(draw, op, 0, 0, x, y, w, h, stride, shmid,
+                   shmaddr + offset, loaderPrivate);
+}
+
+static void
+swrastPutImageShm2(__DRIdrawable * draw, int op,
+                   int x, int y,
+                   int w, int h, int stride,
+		   int shmid, char *shmaddr, unsigned offset,
+		   void *loaderPrivate)
+{
+   struct drisw_drawable *pdp = loaderPrivate;
+
+   pdp->shminfo.shmaddr = shmaddr;
+   swrastXPutImage(draw, op, x, 0, x, y, w, h, stride, shmid,
+                   shmaddr + offset, loaderPrivate);
+}
+
+static void
+swrastPutImage2(__DRIdrawable * draw, int op,
+                int x, int y, int w, int h, int stride,
+                char *data, void *loaderPrivate)
+{
+   swrastXPutImage(draw, op, 0, 0, x, y, w, h, stride, -1,
+                   data, loaderPrivate);
 }
 
 static void
@@ -173,13 +246,14 @@ swrastPutImage(__DRIdrawable * draw, int op,
                int x, int y, int w, int h,
                char *data, void *loaderPrivate)
 {
-   swrastPutImage2(draw, op, x, y, w, h, 0, data, loaderPrivate);
+   swrastXPutImage(draw, op, 0, 0, x, y, w, h, 0, -1,
+                   data, loaderPrivate);
 }
 
 static void
-swrastGetImage(__DRIdrawable * read,
-               int x, int y, int w, int h,
-               char *data, void *loaderPrivate)
+swrastGetImage2(__DRIdrawable * read,
+                int x, int y, int w, int h, int stride,
+                char *data, void *loaderPrivate)
 {
    struct drisw_drawable *prp = loaderPrivate;
    __GLXDRIdrawable *pread = &(prp->base);
@@ -187,30 +261,100 @@ swrastGetImage(__DRIdrawable * read,
    Drawable readable;
    XImage *ximage;
 
+   if (!prp->ximage || prp->shminfo.shmid >= 0) {
+      if (!XCreateDrawable(prp, -1, dpy))
+         return;
+   }
+
    readable = pread->xDrawable;
 
    ximage = prp->ximage;
    ximage->data = data;
    ximage->width = w;
    ximage->height = h;
-   ximage->bytes_per_line = bytes_per_line(w * ximage->bits_per_pixel, 32);
+   ximage->bytes_per_line = stride ? stride : bytes_per_line(w * ximage->bits_per_pixel, 32);
 
    XGetSubImage(dpy, readable, x, y, w, h, ~0L, ZPixmap, ximage, 0, 0);
 
    ximage->data = NULL;
 }
 
-static const __DRIswrastLoaderExtension swrastLoaderExtension = {
-   .base = {__DRI_SWRAST_LOADER, 2 },
+static void
+swrastGetImage(__DRIdrawable * read,
+               int x, int y, int w, int h,
+               char *data, void *loaderPrivate)
+{
+   swrastGetImage2(read, x, y, w, h, 0, data, loaderPrivate);
+}
+
+static GLboolean
+swrastGetImageShm2(__DRIdrawable * read,
+                   int x, int y, int w, int h,
+                   int shmid, void *loaderPrivate)
+{
+   struct drisw_drawable *prp = loaderPrivate;
+   __GLXDRIdrawable *pread = &(prp->base);
+   Display *dpy = pread->psc->dpy;
+   Drawable readable;
+   XImage *ximage;
+
+   if (!prp->ximage || shmid != prp->shminfo.shmid) {
+      if (!XCreateDrawable(prp, shmid, dpy))
+         return GL_FALSE;
+   }
+
+   if (prp->shminfo.shmid == -1)
+      return GL_FALSE;
+   readable = pread->xDrawable;
+
+   ximage = prp->ximage;
+   ximage->data = prp->shminfo.shmaddr; /* no offset */
+   ximage->width = w;
+   ximage->height = h;
+   ximage->bytes_per_line = bytes_per_line(w * ximage->bits_per_pixel, 32);
+
+   XShmGetImage(dpy, readable, ximage, x, y, ~0L);
+   return GL_TRUE;
+}
+
+static void
+swrastGetImageShm(__DRIdrawable * read,
+                  int x, int y, int w, int h,
+                  int shmid, void *loaderPrivate)
+{
+   swrastGetImageShm2(read, x, y, w, h, shmid, loaderPrivate);
+}
+
+static const __DRIswrastLoaderExtension swrastLoaderExtension_shm = {
+   .base = {__DRI_SWRAST_LOADER, 6 },
 
    .getDrawableInfo     = swrastGetDrawableInfo,
    .putImage            = swrastPutImage,
    .getImage            = swrastGetImage,
    .putImage2           = swrastPutImage2,
+   .getImage2           = swrastGetImage2,
+   .putImageShm         = swrastPutImageShm,
+   .getImageShm         = swrastGetImageShm,
+   .putImageShm2        = swrastPutImageShm2,
+   .getImageShm2        = swrastGetImageShm2,
 };
 
-static const __DRIextension *loader_extensions[] = {
-   &systemTimeExtension.base,
+static const __DRIextension *loader_extensions_shm[] = {
+   &swrastLoaderExtension_shm.base,
+   NULL
+};
+
+static const __DRIswrastLoaderExtension swrastLoaderExtension = {
+   .base = {__DRI_SWRAST_LOADER, 3 },
+
+   .getDrawableInfo     = swrastGetDrawableInfo,
+   .putImage            = swrastPutImage,
+   .getImage            = swrastGetImage,
+   .putImage2           = swrastPutImage2,
+   .getImage2           = swrastGetImage2,
+};
+
+static const __DRIextension *loader_extensions_noshm[] = {
    &swrastLoaderExtension.base,
    NULL
 };
@@ -247,11 +391,9 @@ drisw_bind_context(struct glx_context *context, struct glx_context *old,
 
    driReleaseDrawables(&pcp->base);
 
-   if (pdraw == NULL || pread == NULL)
-      return GLXBadDrawable;
-
    if ((*psc->core->bindContext) (pcp->driContext,
-				  pdraw->driDrawable, pread->driDrawable))
+                                  pdraw ? pdraw->driDrawable : NULL,
+                                  pread ? pread->driDrawable : NULL))
       return Success;
 
    return GLXBadContext;
@@ -409,7 +551,8 @@ drisw_create_context_attribs(struct glx_screen *base,
    uint32_t flags;
    unsigned api;
    int reset;
-   uint32_t ctx_attribs[2 * 4];
+   int release;
+   uint32_t ctx_attribs[2 * 5];
    unsigned num_ctx_attribs = 0;
 
    if (!psc->base.driScreen)
@@ -422,7 +565,10 @@ drisw_create_context_attribs(struct glx_screen *base,
     */
    if (!dri2_convert_glx_attribs(num_attribs, attribs,
                                  &major_ver, &minor_ver, &renderType, &flags,
-                                 &api, &reset, error))
+                                 &api, &reset, &release, error))
+      return NULL;
+
+   if (!dri2_check_no_error(flags, shareList, major_ver, error))
       return NULL;
 
    /* Check the renderType value */
@@ -431,6 +577,10 @@ drisw_create_context_attribs(struct glx_screen *base,
    }
 
    if (reset != __DRI_CTX_RESET_NO_NOTIFICATION)
+      return NULL;
+
+   if (release != __DRI_CTX_RELEASE_BEHAVIOR_FLUSH &&
+       release != __DRI_CTX_RELEASE_BEHAVIOR_NONE)
       return NULL;
 
    if (shareList) {
@@ -442,7 +592,7 @@ drisw_create_context_attribs(struct glx_screen *base,
    if (pcp == NULL)
       return NULL;
 
-   if (!glx_context_init(&pcp->base, &psc->base, &config->base)) {
+   if (!glx_context_init(&pcp->base, &psc->base, config_base)) {
       free(pcp);
       return NULL;
    }
@@ -451,6 +601,10 @@ drisw_create_context_attribs(struct glx_screen *base,
    ctx_attribs[num_ctx_attribs++] = major_ver;
    ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_MINOR_VERSION;
    ctx_attribs[num_ctx_attribs++] = minor_ver;
+   if (release != __DRI_CTX_RELEASE_BEHAVIOR_FLUSH) {
+       ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_RELEASE_BEHAVIOR;
+       ctx_attribs[num_ctx_attribs++] = release;
+   }
 
    if (flags != 0) {
       ctx_attribs[num_ctx_attribs++] = __DRI_CTX_ATTRIB_FLAGS;
@@ -459,6 +613,9 @@ drisw_create_context_attribs(struct glx_screen *base,
        * GLX_CONTEXT_*_BIT values.
        */
       ctx_attribs[num_ctx_attribs++] = flags;
+
+      if (flags & __DRI_CTX_FLAG_NO_ERROR)
+         pcp->base.noError = GL_TRUE;
    }
 
    pcp->base.renderType = renderType;
@@ -466,7 +623,7 @@ drisw_create_context_attribs(struct glx_screen *base,
    pcp->driContext =
       (*psc->swrast->createContextAttribs) (psc->driScreen,
 					    api,
-					    config->driConfig,
+					    config ? config->driConfig : 0,
 					    shared,
 					    num_ctx_attribs / 2,
 					    ctx_attribs,
@@ -501,8 +658,8 @@ driswCreateDrawable(struct glx_screen *base, XID xDrawable,
    struct drisw_drawable *pdp;
    __GLXDRIconfigPrivate *config = (__GLXDRIconfigPrivate *) modes;
    struct drisw_screen *psc = (struct drisw_screen *) base;
-   Bool ret;
    const __DRIswrastExtension *swrast = psc->swrast;
+   Display *dpy = psc->base.dpy;
 
    pdp = calloc(1, sizeof(*pdp));
    if (!pdp)
@@ -511,11 +668,34 @@ driswCreateDrawable(struct glx_screen *base, XID xDrawable,
    pdp->base.xDrawable = xDrawable;
    pdp->base.drawable = drawable;
    pdp->base.psc = &psc->base;
+   pdp->config = modes;
+   pdp->gc = XCreateGC(dpy, xDrawable, 0, NULL);
+   pdp->xDepth = 0;
 
-   ret = XCreateDrawable(pdp, psc->base.dpy, xDrawable, modes->visualID);
-   if (!ret) {
-      free(pdp);
-      return NULL;
+   /* Use the visual depth, if this fbconfig corresponds to a visual */
+   if (pdp->config->visualID != 0) {
+      int matches = 0;
+      XVisualInfo *visinfo, template;
+
+      template.visualid = pdp->config->visualID;
+      template.screen = pdp->config->screen;
+      visinfo = XGetVisualInfo(dpy, VisualIDMask | VisualScreenMask,
+                               &template, &matches);
+
+      if (visinfo && matches) {
+         pdp->xDepth = visinfo->depth;
+         XFree(visinfo);
+      }
+   }
+
+   /* Otherwise, or if XGetVisualInfo failed, ask the server */
+   if (pdp->xDepth == 0) {
+      Window root;
+      int x, y;
+      unsigned uw, uh, bw, depth;
+
+      XGetGeometry(dpy, xDrawable, &root, &x, &y, &uw, &uh, &bw, &depth);
+      pdp->xDepth = depth;
    }
 
    /* Create a new drawable */
@@ -585,17 +765,6 @@ driswDestroyScreen(struct glx_screen *base)
 
 #define SWRAST_DRIVER_NAME "swrast"
 
-static void *
-driOpenSwrast(void)
-{
-   void *driver = NULL;
-
-   if (driver == NULL)
-      driver = driOpenDriver(SWRAST_DRIVER_NAME);
-
-   return driver;
-}
-
 static const struct glx_screen_vtable drisw_screen_vtable = {
    .create_context         = drisw_create_context,
    .create_context_attribs = drisw_create_context_attribs,
@@ -614,8 +783,10 @@ driswBindExtensions(struct drisw_screen *psc, const __DRIextension **extensions)
       __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context");
       __glXEnableDirectExtension(&psc->base, "GLX_ARB_create_context_profile");
 
-      /* DRISW version >= 2 implies support for OpenGL ES 2.0.
+      /* DRISW version >= 2 implies support for OpenGL ES.
        */
+      __glXEnableDirectExtension(&psc->base,
+				 "GLX_EXT_create_context_es_profile");
       __glXEnableDirectExtension(&psc->base,
 				 "GLX_EXT_create_context_es2_profile");
    }
@@ -637,7 +808,42 @@ driswBindExtensions(struct drisw_screen *psc, const __DRIextension **extensions)
          psc->rendererQuery = (__DRI2rendererQueryExtension *) extensions[i];
          __glXEnableDirectExtension(&psc->base, "GLX_MESA_query_renderer");
       }
+
+      if (strcmp(extensions[i]->name, __DRI2_ROBUSTNESS) == 0)
+         __glXEnableDirectExtension(&psc->base,
+                                    "GLX_ARB_create_context_robustness");
+
+      if (strcmp(extensions[i]->name, __DRI2_FLUSH_CONTROL) == 0) {
+	  __glXEnableDirectExtension(&psc->base,
+				     "GLX_ARB_context_flush_control");
+      }
    }
+}
+
+static int
+check_xshm(Display *dpy)
+{
+   int (*old_handler)(Display *, XErrorEvent *);
+
+   int ignore;
+   XShmSegmentInfo info = { 0, };
+
+   if (!XQueryExtension(dpy, "MIT-SHM", &xshm_opcode, &ignore, &ignore))
+      return False;
+
+   old_handler = XSetErrorHandler(handle_xerror);
+   XShmDetach(dpy, &info);
+   XSync(dpy, False);
+   (void) XSetErrorHandler(old_handler);
+
+   /* BadRequest means we're a remote client. If we were local we'd
+    * expect BadValue since 'info' has an invalid segment name.
+    */
+   if (xshm_error == BadRequest)
+      return False;
+
+   xshm_error = 0;
+   return True;
 }
 
 static struct glx_screen *
@@ -649,6 +855,7 @@ driswCreateScreen(int screen, struct glx_display *priv)
    struct drisw_screen *psc;
    struct glx_config *configs = NULL, *visuals = NULL;
    int i;
+   const __DRIextension **loader_extensions_local;
 
    psc = calloc(1, sizeof *psc);
    if (psc == NULL)
@@ -659,13 +866,14 @@ driswCreateScreen(int screen, struct glx_display *priv)
       return NULL;
    }
 
-   psc->driver = driOpenSwrast();
-   if (psc->driver == NULL)
-      goto handle_error;
-
-   extensions = driGetDriverExtensions(psc->driver, SWRAST_DRIVER_NAME);
+   extensions = driOpenDriver(SWRAST_DRIVER_NAME, &psc->driver);
    if (extensions == NULL)
       goto handle_error;
+
+   if (!check_xshm(psc->base.dpy))
+      loader_extensions_local = loader_extensions_noshm;
+   else
+      loader_extensions_local = loader_extensions_shm;
 
    for (i = 0; extensions[i]; i++) {
       if (strcmp(extensions[i]->name, __DRI_CORE) == 0)
@@ -683,12 +891,12 @@ driswCreateScreen(int screen, struct glx_display *priv)
 
    if (psc->swrast->base.version >= 4) {
       psc->driScreen =
-         psc->swrast->createNewScreen2(screen, loader_extensions,
+         psc->swrast->createNewScreen2(screen, loader_extensions_local,
                                        extensions,
                                        &driver_configs, psc);
    } else {
       psc->driScreen =
-         psc->swrast->createNewScreen(screen, loader_extensions,
+         psc->swrast->createNewScreen(screen, loader_extensions_local,
                                       &driver_configs, psc);
    }
    if (psc->driScreen == NULL) {

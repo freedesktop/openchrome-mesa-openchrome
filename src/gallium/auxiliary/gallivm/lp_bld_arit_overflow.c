@@ -80,8 +80,8 @@ build_binary_int_overflow(struct gallivm_state *gallivm,
 
    debug_assert(type_width == 16 || type_width == 32 || type_width == 64);
 
-   util_snprintf(intr_str, sizeof intr_str, "%s.i%u",
-                 intr_prefix, type_width);
+   snprintf(intr_str, sizeof intr_str, "%s.i%u",
+            intr_prefix, type_width);
 
    oelems[0] = type_ref;
    oelems[1] = LLVMInt1TypeInContext(gallivm->context);
@@ -123,6 +123,30 @@ lp_build_uadd_overflow(struct gallivm_state *gallivm,
                        LLVMValueRef *ofbit)
 {
    return build_binary_int_overflow(gallivm, "llvm.uadd.with.overflow",
+                                    a, b, ofbit);
+}
+
+/**
+ * Performs unsigned subtraction of two integers and reports 
+ * overflow if detected.
+ *
+ * The values @a and @b must be of the same integer type. If
+ * an overflow is detected the IN/OUT @ofbit parameter is used:
+ * - if it's pointing to a null value, the overflow bit is simply
+ *   stored inside the variable it's pointing to,
+ * - if it's pointing to a valid value, then that variable,
+ *   which must be of i1 type, is ORed with the newly detected
+ *   overflow bit. This is done to allow chaining of a number of
+ *   overflow functions together without having to test the 
+ *   overflow bit after every single one.
+ */
+LLVMValueRef
+lp_build_usub_overflow(struct gallivm_state *gallivm,
+                       LLVMValueRef a,
+                       LLVMValueRef b,
+                       LLVMValueRef *ofbit)
+{
+   return build_binary_int_overflow(gallivm, "llvm.usub.with.overflow",
                                     a, b, ofbit);
 }
 

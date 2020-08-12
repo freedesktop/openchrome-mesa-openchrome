@@ -32,7 +32,7 @@
  * \author  Brian Paul
  */
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "draw_pipe.h"
@@ -49,7 +49,7 @@ struct offset_stage {
 
 
 
-static INLINE struct offset_stage *offset_stage( struct draw_stage *stage )
+static inline struct offset_stage *offset_stage( struct draw_stage *stage )
 {
    return (struct offset_stage *) stage;
 }
@@ -120,9 +120,9 @@ static void do_offset_tri( struct draw_stage *stage,
     * Note: we're applying the offset and clamping per-vertex.
     * Ideally, the offset is applied per-fragment prior to fragment shading.
     */
-   v0[2] = CLAMP(v0[2] + zoffset, 0.0f, 1.0f);
-   v1[2] = CLAMP(v1[2] + zoffset, 0.0f, 1.0f);
-   v2[2] = CLAMP(v2[2] + zoffset, 0.0f, 1.0f);
+   v0[2] = SATURATE(v0[2] + zoffset);
+   v1[2] = SATURATE(v1[2] + zoffset);
+   v2[2] = SATURATE(v2[2] + zoffset);
 
    stage->next->tri( stage->next, header );
 }
@@ -231,7 +231,7 @@ static void offset_destroy( struct draw_stage *stage )
 struct draw_stage *draw_offset_stage( struct draw_context *draw )
 {
    struct offset_stage *offset = CALLOC_STRUCT(offset_stage);
-   if (offset == NULL)
+   if (!offset)
       goto fail;
 
    offset->stage.draw = draw;

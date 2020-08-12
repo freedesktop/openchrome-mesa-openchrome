@@ -26,12 +26,15 @@
 #include "util/u_inlines.h"
 #include "pipe/p_defines.h"
 #include "util/u_math.h"
+#include "util/format/u_format.h"
 
 #include "svga_context.h"
 #include "svga_state.h"
 #include "svga_cmd.h"
 #include "svga_debug.h"
 #include "svga_screen.h"
+#include "svga_surface.h"
+#include "svga_resource_texture.h"
 
 
 /*
@@ -46,21 +49,18 @@
 #define MAX_RT_PER_BATCH 8
 
 
-/***********************************************************************
- * Hardware state update
- */
-
 
 static enum pipe_error
-emit_framebuffer( struct svga_context *svga,
-                  unsigned dirty )
+emit_fb_vgpu9(struct svga_context *svga)
 {
    struct svga_screen *svgascreen = svga_screen(svga->pipe.screen);
    const struct pipe_framebuffer_state *curr = &svga->curr.framebuffer;
    struct pipe_framebuffer_state *hw = &svga->state.hw_clear.framebuffer;
-   boolean reemit = svga->rebind.rendertargets;
+   boolean reemit = svga->rebind.flags.rendertargets;
    unsigned i;
    enum pipe_error ret;
+
+   assert(!svga_have_vgpu10(svga));
 
    /*
     * We need to reemit non-null surface bindings, even when they are not
@@ -68,10 +68,13 @@ emit_framebuffer( struct svga_context *svga,
     */
 
    for (i = 0; i < svgascreen->max_color_buffers; i++) {
-      if (curr->cbufs[i] != hw->cbufs[i] ||
-          (reemit && hw->cbufs[i])) {
+      if ((curr->cbufs[i] != hw->cbufs[i]) || (reemit && hw->cbufs[i])) {
          if (svga->curr.nr_fbs++ > MAX_RT_PER_BATCH)
             return PIPE_ERROR_OUT_OF_MEMORY;
+
+         /* Check to see if we need to propagate the render target surface */
+         if (hw->cbufs[i] && svga_surface_needs_propagation(hw->cbufs[i]))
+            svga_propagate_surface(svga, hw->cbufs[i], TRUE);
 
          ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_COLOR0 + i,
                                       curr->cbufs[i]);
@@ -80,16 +83,26 @@ emit_framebuffer( struct svga_context *svga,
 
          pipe_surface_reference(&hw->cbufs[i], curr->cbufs[i]);
       }
+
+      /* Set the rendered-to flag */
+      struct pipe_surface *s = curr->cbufs[i];
+      if (s) {
+         svga_set_texture_rendered_to(svga_texture(s->texture),
+                                      s->u.tex.first_layer, s->u.tex.level);
+      }
    }
 
-   if (curr->zsbuf != hw->zsbuf ||
-       (reemit && hw->zsbuf)) {
+   if ((curr->zsbuf != hw->zsbuf) || (reemit && hw->zsbuf)) {
       ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_DEPTH, curr->zsbuf);
       if (ret != PIPE_OK)
          return ret;
 
+      /* Check to see if we need to propagate the depth stencil surface */
+      if (hw->zsbuf && svga_surface_needs_propagation(hw->zsbuf))
+         svga_propagate_surface(svga, hw->zsbuf, TRUE);
+
       if (curr->zsbuf &&
-          curr->zsbuf->format == PIPE_FORMAT_S8_UINT_Z24_UNORM) {
+          util_format_is_depth_and_stencil(curr->zsbuf->format)) {
          ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_STENCIL,
                                       curr->zsbuf);
          if (ret != PIPE_OK)
@@ -102,9 +115,14 @@ emit_framebuffer( struct svga_context *svga,
       }
 
       pipe_surface_reference(&hw->zsbuf, curr->zsbuf);
-   }
 
-   svga->rebind.rendertargets = FALSE;
+      /* Set the rendered-to flag */
+      struct pipe_surface *s = curr->zsbuf;
+      if (s) {
+         svga_set_texture_rendered_to(svga_texture(s->texture),
+                                      s->u.tex.first_layer, s->u.tex.level);
+      }
+   }
 
    return PIPE_OK;
 }
@@ -118,15 +136,15 @@ emit_framebuffer( struct svga_context *svga,
  * Called at the beginning of every new command buffer to ensure that
  * non-dirty rendertargets are properly paged-in.
  */
-enum pipe_error
-svga_reemit_framebuffer_bindings(struct svga_context *svga)
+static enum pipe_error
+svga_reemit_framebuffer_bindings_vgpu9(struct svga_context *svga)
 {
    struct svga_screen *svgascreen = svga_screen(svga->pipe.screen);
    struct pipe_framebuffer_state *hw = &svga->state.hw_clear.framebuffer;
    unsigned i;
    enum pipe_error ret;
 
-   assert(svga->rebind.rendertargets);
+   assert(!svga_have_vgpu10(svga));
 
    for (i = 0; i < svgascreen->max_color_buffers; i++) {
       if (hw->cbufs[i]) {
@@ -145,7 +163,7 @@ svga_reemit_framebuffer_bindings(struct svga_context *svga)
       }
 
       if (hw->zsbuf &&
-          hw->zsbuf->format == PIPE_FORMAT_S8_UINT_Z24_UNORM) {
+          util_format_is_depth_and_stencil(hw->zsbuf->format)) {
          ret = SVGA3D_SetRenderTarget(svga->swc, SVGA3D_RT_STENCIL, hw->zsbuf);
          if (ret != PIPE_OK) {
             return ret;
@@ -159,7 +177,211 @@ svga_reemit_framebuffer_bindings(struct svga_context *svga)
       }
    }
 
-   svga->rebind.rendertargets = FALSE;
+   return PIPE_OK;
+}
+
+
+
+static enum pipe_error
+emit_fb_vgpu10(struct svga_context *svga)
+{
+   const struct svga_screen *ss = svga_screen(svga->pipe.screen);
+   struct pipe_surface *rtv[SVGA3D_MAX_RENDER_TARGETS];
+   struct pipe_surface *dsv;
+   struct pipe_framebuffer_state *curr = &svga->curr.framebuffer;
+   struct pipe_framebuffer_state *hw = &svga->state.hw_clear.framebuffer;
+   const unsigned num_color = MAX2(curr->nr_cbufs, hw->nr_cbufs);
+   int last_rtv = -1;
+   unsigned i;
+   enum pipe_error ret = PIPE_OK;
+
+   assert(svga_have_vgpu10(svga));
+
+   /* Reset the has_backed_views flag.
+    * The flag is set in svga_validate_surface_view() if
+    * a backed surface view is used.
+    */
+   svga->state.hw_draw.has_backed_views = FALSE;
+
+   /* Setup render targets array.  Note that we loop over the max of the
+    * number of previously bound buffers and the new buffers to unbind
+    * any previously bound buffers when the new number of buffers is less
+    * than the old number of buffers.
+    */
+   for (i = 0; i < num_color; i++) {
+      if (curr->cbufs[i]) {
+         struct pipe_surface *s = curr->cbufs[i];
+
+         if (curr->cbufs[i] != hw->cbufs[i]) {
+            rtv[i] = svga_validate_surface_view(svga, svga_surface(s));
+            if (rtv[i] == NULL) {
+               return PIPE_ERROR_OUT_OF_MEMORY;
+            }
+         } else {
+           rtv[i] = svga->state.hw_clear.rtv[i];
+         }
+
+         assert(svga_surface(rtv[i])->view_id != SVGA3D_INVALID_ID);
+         last_rtv = i;
+
+         /* Set the rendered-to flag */
+         svga_set_texture_rendered_to(svga_texture(s->texture),
+                                      s->u.tex.first_layer, s->u.tex.level);
+      }
+      else {
+         rtv[i] = NULL;
+      }
+   }
+
+   /* Setup depth stencil view */
+   if (curr->zsbuf) {
+      struct pipe_surface *s = curr->zsbuf;
+
+      if (curr->zsbuf != hw->zsbuf) {
+         dsv = svga_validate_surface_view(svga, svga_surface(curr->zsbuf));
+         if (!dsv) {
+            return PIPE_ERROR_OUT_OF_MEMORY;
+         }
+      } else {
+         dsv = svga->state.hw_clear.dsv;
+      }
+
+      /* Set the rendered-to flag */
+      svga_set_texture_rendered_to(svga_texture(s->texture),
+                                      s->u.tex.first_layer, s->u.tex.level);
+   }
+   else {
+      dsv = NULL;
+   }
+
+   /* avoid emitting redundant SetRenderTargets command */
+   if ((num_color != svga->state.hw_clear.num_rendertargets) ||
+       (dsv != svga->state.hw_clear.dsv) ||
+       memcmp(rtv, svga->state.hw_clear.rtv, num_color * sizeof(rtv[0]))) {
+
+      ret = SVGA3D_vgpu10_SetRenderTargets(svga->swc, num_color, rtv, dsv);
+      if (ret != PIPE_OK)
+         return ret;
+
+      /* number of render targets sent to the device, not including trailing
+       * unbound render targets.
+       */
+      for (i = 0; i < ss->max_color_buffers; i++) {
+         if (hw->cbufs[i] != curr->cbufs[i]) {
+            /* propagate the backed view surface before unbinding it */
+            if (hw->cbufs[i] && svga_surface(hw->cbufs[i])->backed) {
+               svga_propagate_surface(svga,
+                                      &svga_surface(hw->cbufs[i])->backed->base,
+                                      TRUE);
+            }
+            else if (svga->state.hw_clear.rtv[i] != hw->cbufs[i] &&
+                     svga->state.hw_clear.rtv[i]) {
+               /* Free the alternate surface view when it is unbound.  */
+               svga->pipe.surface_destroy(&svga->pipe, svga->state.hw_clear.rtv[i]);
+            }
+            pipe_surface_reference(&hw->cbufs[i], curr->cbufs[i]);
+         }
+      }
+      svga->state.hw_clear.num_rendertargets = last_rtv + 1;
+      memcpy(svga->state.hw_clear.rtv, rtv, num_color * sizeof(rtv[0]));
+      hw->nr_cbufs = curr->nr_cbufs;
+
+      if (hw->zsbuf != curr->zsbuf) {
+         /* propagate the backed view surface before unbinding it */
+         if (hw->zsbuf && svga_surface(hw->zsbuf)->backed) {
+            svga_propagate_surface(svga,
+                                   &svga_surface(hw->zsbuf)->backed->base,
+                                   TRUE);
+         }
+         else if (svga->state.hw_clear.dsv != hw->zsbuf && svga->state.hw_clear.dsv) {
+            /* Free the alternate surface view when it is unbound.  */
+            svga->pipe.surface_destroy(&svga->pipe, svga->state.hw_clear.dsv);
+         }
+         pipe_surface_reference(&hw->zsbuf, curr->zsbuf);
+      }
+      svga->state.hw_clear.dsv = dsv;
+   }
+
+   return ret;
+}
+
+
+static enum pipe_error
+emit_framebuffer(struct svga_context *svga, uint64_t dirty)
+{
+   if (svga_have_vgpu10(svga)) {
+      return emit_fb_vgpu10(svga);
+   }
+   else {
+      return emit_fb_vgpu9(svga);
+   }
+}
+
+
+/*
+ * Rebind rendertargets.
+ *
+ * Similar to emit_framebuffer, but without any state checking/update.
+ *
+ * Called at the beginning of every new command buffer to ensure that
+ * non-dirty rendertargets are properly paged-in.
+ */
+enum pipe_error
+svga_reemit_framebuffer_bindings(struct svga_context *svga)
+{
+   enum pipe_error ret;
+
+   assert(svga->rebind.flags.rendertargets);
+
+   if (svga_have_vgpu10(svga)) {
+      ret = emit_fb_vgpu10(svga);
+   }
+   else {
+      ret = svga_reemit_framebuffer_bindings_vgpu9(svga);
+   }
+
+   svga->rebind.flags.rendertargets = FALSE;
+
+   return ret;
+}
+
+
+/*
+ * Send a private allocation command to page in rendertargets resource.
+ */
+enum pipe_error
+svga_rebind_framebuffer_bindings(struct svga_context *svga)
+{
+   struct svga_hw_clear_state *hw = &svga->state.hw_clear;
+   unsigned i;
+   enum pipe_error ret;
+
+   assert(svga_have_vgpu10(svga));
+
+   if (!svga->rebind.flags.rendertargets)
+      return PIPE_OK;
+
+   for (i = 0; i < hw->num_rendertargets; i++) {
+      if (hw->rtv[i]) {
+         ret = svga->swc->resource_rebind(svga->swc,
+                                          svga_surface(hw->rtv[i])->handle,
+                                          NULL,
+                                          SVGA_RELOC_WRITE);
+         if (ret != PIPE_OK)
+            return ret;
+      }
+   }
+
+   if (hw->dsv) {
+      ret = svga->swc->resource_rebind(svga->swc,
+                                       svga_surface(hw->dsv)->handle,
+                                       NULL,
+                                       SVGA_RELOC_WRITE);
+      if (ret != PIPE_OK)
+         return ret;
+   }
+
+   svga->rebind.flags.rendertargets = 0;
 
    return PIPE_OK;
 }
@@ -178,13 +400,14 @@ struct svga_tracked_state svga_hw_framebuffer =
 /***********************************************************************
  */
 
-static enum pipe_error
-emit_viewport( struct svga_context *svga,
-               unsigned dirty )
+static void
+get_viewport_prescale(struct svga_context *svga,
+                      struct pipe_viewport_state *viewport,
+                      SVGA3dViewport *vp,
+                      struct svga_prescale *prescale)
 {
-   const struct pipe_viewport_state *viewport = &svga->curr.viewport;
-   struct svga_prescale prescale;
    SVGA3dRect rect;
+
    /* Not sure if this state is relevant with POSITIONT.  Probably
     * not, but setting to 0,1 avoids some state pingponging.
     */
@@ -193,7 +416,6 @@ emit_viewport( struct svga_context *svga,
    float flip = -1.0;
    boolean degenerate = FALSE;
    boolean invertY = FALSE;
-   enum pipe_error ret;
 
    float fb_width = (float) svga->curr.framebuffer.width;
    float fb_height = (float) svga->curr.framebuffer.height;
@@ -203,7 +425,7 @@ emit_viewport( struct svga_context *svga,
    float fw =        viewport->scale[0] * 2.0f;
    float fh = flip * viewport->scale[1] * 2.0f;
 
-   memset( &prescale, 0, sizeof(prescale) );
+   memset(prescale, 0, sizeof(*prescale));
 
    /* Examine gallium viewport transformation and produce a screen
     * rectangle and possibly vertex shader pre-transformation to
@@ -217,67 +439,83 @@ emit_viewport( struct svga_context *svga,
             fw,
             fh);
 
-   prescale.scale[0] = 1.0;
-   prescale.scale[1] = 1.0;
-   prescale.scale[2] = 1.0;
-   prescale.scale[3] = 1.0;
-   prescale.translate[0] = 0;
-   prescale.translate[1] = 0;
-   prescale.translate[2] = 0;
-   prescale.translate[3] = 0;
-   prescale.enabled = TRUE;
+   prescale->scale[0] = 1.0;
+   prescale->scale[1] = 1.0;
+   prescale->scale[2] = 1.0;
+   prescale->scale[3] = 1.0;
+   prescale->translate[0] = 0;
+   prescale->translate[1] = 0;
+   prescale->translate[2] = 0;
+   prescale->translate[3] = 0;
+
+   /* Enable prescale to adjust vertex positions to match
+      VGPU10 convention only if rasterization is enabled.
+    */
+   if (svga->curr.rast && svga->curr.rast->templ.rasterizer_discard) {
+      degenerate = TRUE;
+      goto out;
+   } else {
+      prescale->enabled = TRUE;
+   }
 
    if (fw < 0) {
-      prescale.scale[0] *= -1.0f;
-      prescale.translate[0] += -fw;
+      prescale->scale[0] *= -1.0f;
+      prescale->translate[0] += -fw;
       fw = -fw;
       fx = viewport->scale[0] * 1.0f + viewport->translate[0];
    }
 
    if (fh < 0.0) {
-      prescale.translate[1] = fh - 1.0f + fy * 2.0f;
+      if (svga_have_vgpu10(svga)) {
+         /* floating point viewport params below */
+         prescale->translate[1] = fh + fy * 2.0f;
+      }
+      else {
+         /* integer viewport params below */
+         prescale->translate[1] = fh - 1.0f + fy * 2.0f;
+      }
       fh = -fh;
       fy -= fh;
-      prescale.scale[1] = -1.0f;
+      prescale->scale[1] = -1.0f;
       invertY = TRUE;
    }
 
    if (fx < 0) {
-      prescale.translate[0] += fx;
-      prescale.scale[0] *= fw / (fw + fx);
+      prescale->translate[0] += fx;
+      prescale->scale[0] *= fw / (fw + fx);
       fw += fx;
       fx = 0.0f;
    }
 
    if (fy < 0) {
       if (invertY) {
-         prescale.translate[1] -= fy;
+         prescale->translate[1] -= fy;
       }
       else {
-         prescale.translate[1] += fy;
+         prescale->translate[1] += fy;
       }
-      prescale.scale[1] *= fh / (fh + fy);
+      prescale->scale[1] *= fh / (fh + fy);
       fh += fy;
       fy = 0.0f;
    }
 
    if (fx + fw > fb_width) {
-      prescale.scale[0] *= fw / (fb_width - fx);
-      prescale.translate[0] -= fx * (fw / (fb_width - fx));
-      prescale.translate[0] += fx;
+      prescale->scale[0] *= fw / (fb_width - fx);
+      prescale->translate[0] -= fx * (fw / (fb_width - fx));
+      prescale->translate[0] += fx;
       fw = fb_width - fx;
    }
 
    if (fy + fh > fb_height) {
-      prescale.scale[1] *= fh / (fb_height - fy);
+      prescale->scale[1] *= fh / (fb_height - fy);
       if (invertY) {
          float in = fb_height - fy;       /* number of vp pixels inside view */
          float out = fy + fh - fb_height; /* number of vp pixels out of view */
-         prescale.translate[1] += fy * out / in;
+         prescale->translate[1] += fy * out / in;
       }
       else {
-         prescale.translate[1] -= fy * (fh / (fb_height - fy));
-         prescale.translate[1] += fy;
+         prescale->translate[1] -= fy * (fh / (fb_height - fy));
+         prescale->translate[1] += fy;
       }
       fh = fb_height - fy;
    }
@@ -317,32 +555,37 @@ emit_viewport( struct svga_context *svga,
     * screen-space coordinates slightly relative to D3D which is
     * what hardware implements natively.
     */
-   if (svga->curr.rast->templ.half_pixel_center) {
+   if (svga->curr.rast && svga->curr.rast->templ.half_pixel_center) {
       float adjust_x = 0.0;
       float adjust_y = 0.0;
 
-      switch (svga->curr.reduced_prim) {
-      case PIPE_PRIM_POINTS:
-         adjust_x = -0.375;
-         adjust_y = -0.75;
-         break;
-      case PIPE_PRIM_LINES:
-         adjust_x = -0.5;
-         adjust_y = 0;
-         break;
-      case PIPE_PRIM_TRIANGLES:
+      if (svga_have_vgpu10(svga)) {
+         /* Normally, we don't have to do any sub-pixel coordinate
+          * adjustments for VGPU10.  But when we draw wide points with
+          * a GS we need an X adjustment in order to be conformant.
+          */
+         if (svga->curr.reduced_prim == PIPE_PRIM_POINTS &&
+             svga->curr.rast->pointsize > 1.0f) {
+            adjust_x = 0.5;
+         }
+      }
+      else {
+         /* Use (-0.5, -0.5) bias for all prim types.
+          * Regarding line rasterization, this does not seem to satisfy
+          * the Piglit gl-1.0-ortho-pos test but it generally produces
+          * results identical or very similar to VGPU10.
+          */
          adjust_x = -0.5;
          adjust_y = -0.5;
-         break;
       }
 
       if (invertY)
          adjust_y = -adjust_y;
 
-      prescale.translate[0] += adjust_x;
-      prescale.translate[1] += adjust_y;
-      prescale.translate[2] = 0.5; /* D3D clip space */
-      prescale.scale[2]     = 0.5; /* D3D clip space */
+      prescale->translate[0] += adjust_x;
+      prescale->translate[1] += adjust_y;
+      prescale->translate[2] = 0.5; /* D3D clip space */
+      prescale->scale[2]     = 0.5; /* D3D clip space */
    }
 
    range_min = viewport->scale[2] * -1.0f + viewport->translate[2];
@@ -357,20 +600,31 @@ emit_viewport( struct svga_context *svga,
       range_tmp = range_min;
       range_min = range_max;
       range_max = range_tmp;
-      prescale.scale[2] = -prescale.scale[2];
+      prescale->scale[2] = -prescale->scale[2];
    }
 
-   if (prescale.enabled) {
+   /* If zmin is less than 0, clamp zmin to 0 and adjust the prescale.
+    * zmin can be set to -1 when viewport->scale[2] is set to 1 and
+    * viewport->translate[2] is set to 0 in the blit code.
+    */
+   if (range_min < 0.0f) {
+      range_min = -0.5f * viewport->scale[2] + 0.5f + viewport->translate[2];
+      range_max = 0.5f * viewport->scale[2] + 0.5f + viewport->translate[2];
+      prescale->scale[2] *= 2.0f;
+      prescale->translate[2] -= 0.5f;
+   }
+
+   if (prescale->enabled) {
       float H[2];
       float J[2];
       int i;
 
       SVGA_DBG(DEBUG_VIEWPORT,
                "prescale %f,%f %fx%f\n",
-               prescale.translate[0],
-               prescale.translate[1],
-               prescale.scale[0],
-               prescale.scale[1]);
+               prescale->translate[0],
+               prescale->translate[1],
+               prescale->scale[0],
+               prescale->scale[1]);
 
       H[0] = (float)rect.w / 2.0f;
       H[1] = -(float)rect.h / 2.0f;
@@ -407,16 +661,16 @@ emit_viewport( struct svga_context *svga,
        * Overwrite prescale.translate with values for K:
        */
       for (i = 0; i < 2; i++) {
-         prescale.translate[i] = ((prescale.translate[i] +
-                                   (prescale.scale[i] - 1.0f) * J[i]) / H[i]);
+         prescale->translate[i] = ((prescale->translate[i] +
+                                   (prescale->scale[i] - 1.0f) * J[i]) / H[i]);
       }
 
       SVGA_DBG(DEBUG_VIEWPORT,
                "clipspace %f,%f %fx%f\n",
-               prescale.translate[0],
-               prescale.translate[1],
-               prescale.scale[0],
-               prescale.scale[1]);
+               prescale->translate[0],
+               prescale->translate[1],
+               prescale->scale[0],
+               prescale->scale[1]);
    }
 
 out:
@@ -425,31 +679,90 @@ out:
       rect.y = 0;
       rect.w = 1;
       rect.h = 1;
-      prescale.enabled = FALSE;
+      prescale->enabled = FALSE;
    }
 
-   if (memcmp(&rect, &svga->state.hw_clear.viewport, sizeof(rect)) != 0) {
-      ret = SVGA3D_SetViewport(svga->swc, &rect);
-      if(ret != PIPE_OK)
-         return ret;
+   vp->x = (float) rect.x;
+   vp->y = (float) rect.y;
+   vp->width = (float) rect.w;
+   vp->height = (float) rect.h;
+   vp->minDepth = range_min;
+   vp->maxDepth = range_max;
+}
 
-      memcpy(&svga->state.hw_clear.viewport, &rect, sizeof(rect));
-      assert(sizeof(rect) == sizeof(svga->state.hw_clear.viewport));
+
+static enum pipe_error
+emit_viewport( struct svga_context *svga,
+               uint64_t dirty )
+{
+   struct svga_screen *svgascreen = svga_screen(svga->pipe.screen);
+   SVGA3dViewport viewports[SVGA3D_DX_MAX_VIEWPORTS];
+   struct svga_prescale prescale[SVGA3D_DX_MAX_VIEWPORTS];
+   unsigned i;
+   enum pipe_error ret;
+   unsigned max_viewports = svgascreen->max_viewports;
+
+   for (i = 0; i < max_viewports; i++) {
+      get_viewport_prescale(svga, &svga->curr.viewport[i],
+                            &viewports[i], &prescale[i]);
    }
 
-   if (svga->state.hw_clear.depthrange.zmin != range_min ||
-       svga->state.hw_clear.depthrange.zmax != range_max) {
-      ret = SVGA3D_SetZRange(svga->swc, range_min, range_max );
-      if(ret != PIPE_OK)
-         return ret;
+   if (memcmp(viewports, svga->state.hw_clear.viewports,
+              max_viewports * sizeof viewports[0]) != 0) {
 
-      svga->state.hw_clear.depthrange.zmin = range_min;
-      svga->state.hw_clear.depthrange.zmax = range_max;
+      if (!svga_have_vgpu10(svga)) {
+         SVGA3dRect rect;
+         SVGA3dViewport *vp = &viewports[0];
+
+         rect.x = (uint32)vp->x;
+         rect.y = (uint32)vp->y;
+         rect.w = (uint32)vp->width;
+         rect.h = (uint32)vp->height;
+
+         ret = SVGA3D_SetViewport(svga->swc, &rect);
+         if (ret != PIPE_OK)
+            return ret;
+
+         ret = SVGA3D_SetZRange(svga->swc, vp->minDepth, vp->maxDepth);
+         if (ret != PIPE_OK)
+            return ret;
+
+         svga->state.hw_clear.viewport = rect;
+         svga->state.hw_clear.depthrange.zmin = vp->minDepth;
+         svga->state.hw_clear.depthrange.zmax = vp->maxDepth;
+      }
+      else {
+         ret = SVGA3D_vgpu10_SetViewports(svga->swc, max_viewports,
+                                          viewports);
+         if (ret != PIPE_OK)
+            return ret;
+      }
+      memcpy(svga->state.hw_clear.viewports, viewports,
+             max_viewports * sizeof viewports[0]);
    }
 
-   if (memcmp(&prescale, &svga->state.hw_clear.prescale, sizeof prescale) != 0) {
+   if (memcmp(prescale, svga->state.hw_clear.prescale,
+              max_viewports * sizeof prescale[0]) != 0) {
       svga->dirty |= SVGA_NEW_PRESCALE;
-      svga->state.hw_clear.prescale = prescale;
+      memcpy(svga->state.hw_clear.prescale, prescale,
+             max_viewports * sizeof prescale[0]);
+
+      /*
+       * Determine number of unique prescales. This is to minimize the
+       * if check needed in the geometry shader to identify the prescale
+       * for the specified viewport.
+       */
+      unsigned last_prescale = SVGA3D_DX_MAX_VIEWPORTS - 1;
+      unsigned i;
+      for (i = SVGA3D_DX_MAX_VIEWPORTS-1; i > 0; i--) {
+         if (memcmp(&svga->state.hw_clear.prescale[i],
+                    &svga->state.hw_clear.prescale[i-1],
+                    sizeof svga->state.hw_clear.prescale[0])) {
+            break;
+         }
+         last_prescale--;
+      }
+      svga->state.hw_clear.num_prescale = last_prescale + 1;
    }
 
    return PIPE_OK;
@@ -472,19 +785,49 @@ struct svga_tracked_state svga_hw_viewport =
  */
 static enum pipe_error
 emit_scissor_rect( struct svga_context *svga,
-                   unsigned dirty )
+                   uint64_t dirty )
 {
-   const struct pipe_scissor_state *scissor = &svga->curr.scissor;
-   SVGA3dRect rect;
+   struct svga_screen *svgascreen = svga_screen(svga->pipe.screen);
+   const struct pipe_scissor_state *scissor = svga->curr.scissor;
+   unsigned max_viewports = svgascreen->max_viewports;
+   enum pipe_error ret;
 
-   rect.x = scissor->minx;
-   rect.y = scissor->miny;
-   rect.w = scissor->maxx - scissor->minx; /* + 1 ?? */
-   rect.h = scissor->maxy - scissor->miny; /* + 1 ?? */
+   if (memcmp(&svga->state.hw_clear.scissors[0], scissor,
+              max_viewports * sizeof *scissor) != 0) {
 
-   return SVGA3D_SetScissorRect(svga->swc, &rect);
+      if (svga_have_vgpu10(svga)) {
+         SVGASignedRect rect[SVGA3D_DX_MAX_VIEWPORTS];
+         unsigned i;
+
+         for (i = 0; i < max_viewports; i++) {
+            rect[i].left = scissor[i].minx;
+            rect[i].top = scissor[i].miny;
+            rect[i].right = scissor[i].maxx;
+            rect[i].bottom = scissor[i].maxy;
+         }
+
+         ret = SVGA3D_vgpu10_SetScissorRects(svga->swc, max_viewports, rect);
+      }
+      else {
+         SVGA3dRect rect;
+
+         rect.x = scissor[0].minx;
+         rect.y = scissor[0].miny;
+         rect.w = scissor[0].maxx - scissor[0].minx; /* + 1 ?? */
+         rect.h = scissor[0].maxy - scissor[0].miny; /* + 1 ?? */
+
+         ret = SVGA3D_SetScissorRect(svga->swc, &rect);
+      }
+
+      if (ret != PIPE_OK)
+         return ret;
+
+      memcpy(svga->state.hw_clear.scissors, scissor,
+             max_viewports * sizeof *scissor);
+   }
+
+   return PIPE_OK;
 }
-
 
 struct svga_tracked_state svga_hw_scissor =
 {
@@ -500,7 +843,7 @@ struct svga_tracked_state svga_hw_scissor =
 
 static enum pipe_error
 emit_clip_planes( struct svga_context *svga,
-                  unsigned dirty )
+                  uint64_t dirty )
 {
    unsigned i;
    enum pipe_error ret;
@@ -527,9 +870,15 @@ emit_clip_planes( struct svga_context *svga,
       plane[2] = 2.0f * c;
       plane[3] = d - c;
 
-      ret = SVGA3D_SetClipPlane(svga->swc, i, plane);
-      if(ret != PIPE_OK)
-         return ret;
+      if (svga_have_vgpu10(svga)) {
+         //debug_printf("XXX emit DX10 clip plane\n");
+         ret = PIPE_OK;
+      }
+      else {
+         ret = SVGA3D_SetClipPlane(svga->swc, i, plane);
+         if (ret != PIPE_OK)
+            return ret;
+      }
    }
 
    return PIPE_OK;
